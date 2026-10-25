@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# Isaac Sim / Isaac Lab
+_isaac_sim/
+*.dmp
+*.usd
+*.usda
+*.usdc
+*.usdz
+
+# Training outputs and checkpoints
+logs/
+outputs/
+videos/
+wandb/
+*.ckpt
+*.pt
+*.pth
+*.onnx
+*.pb
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+*.log

@@ -1,0 +1,19 @@
+[package]
+version = "0.1.0"
+category = "isaaclab"
+readme = "../../../README.md"
+title = "DreamWaQ Lab"
+author = "LunarQuadruped Project"
+maintainer = "LunarQuadruped Project"
+description = "Unitree Go2 DreamWaQ training, evaluation, and export on Isaac Lab"
+repository = ""
+keywords = ["isaaclab", "unitree", "go2", "dreamwaq", "reinforcement-learning"]
+
+[dependencies]
+"isaaclab" = {}
+"isaaclab_assets" = {}
+"isaaclab_rl" = {}
+"isaaclab_tasks" = {}
+
+[[python.module]]
+name = "dreamwaq_lab"

@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68", "wheel", "toml"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["logs", "_isaac_sim", ".git"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E402"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
