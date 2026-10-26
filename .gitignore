@@ -30,3 +30,4 @@ wandb/
 .vscode/
 .DS_Store
 *.log
+tool/

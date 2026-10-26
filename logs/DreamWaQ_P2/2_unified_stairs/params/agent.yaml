@@ -1,0 +1,87 @@
+seed: 1
+device: cuda:0
+num_steps_per_env: 24
+max_iterations: 300
+empirical_normalization: null
+obs_groups:
+  policy:
+  - dreamwaq_policy
+  - dreamwaq_policy_history
+  critic:
+  - dreamwaq_critic
+clip_actions: null
+save_interval: 25
+experiment_name: unitree/unitree_go2_dreamwaq_unified_stage14
+run_name: waxberry_stage14_unified_from_flatpurify7189_300iter
+logger: tensorboard
+neptune_project: isaaclab
+wandb_project: isaaclab
+resume: true
+load_run: /home/rum/dreamwaq_lab/logs/rsl_rl/unitree/unitree_go2_dreamwaq_flat_purify_stage13/2026-10-14_13-06_waxberry_stage13_flat_purify_from_optimal6990_200iter
+load_checkpoint: model_7189.pt
+class_name: OnPolicyRunner
+policy:
+  class_name: DreamWaQActorCritic
+  init_noise_std: 0.6
+  noise_std_type: scalar
+  state_dependent_std: false
+  actor_obs_normalization: false
+  critic_obs_normalization: false
+  actor_hidden_dims:
+  - 512
+  - 256
+  - 128
+  critic_hidden_dims:
+  - 512
+  - 256
+  - 128
+  activation: elu
+  history_length: 5
+  proprio_obs_dim: -1
+  estimated_velocity_dim: 3
+  context_latent_dim: 16
+  cenet_encoder_hidden_dims:
+  - 128
+  - 64
+  cenet_decoder_hidden_dims:
+  - 128
+  - 128
+  beta_vae_kl_weight: 0.01
+  use_cenet: true
+  history_is_term_major: true
+  history_term_dims: null
+  detach_cenet_actor_input: true
+  reconstruct_next_observation: true
+  policy_group_name: dreamwaq_policy
+  history_group_name: dreamwaq_policy_history
+  reconstruction_target_group_name: dreamwaq_reconstruction_target
+  critic_group_name: dreamwaq_critic
+algorithm:
+  class_name: DreamWaQPPO
+  num_learning_epochs: 5
+  num_mini_batches: 4
+  learning_rate: 0.0001
+  schedule: adaptive
+  gamma: 0.99
+  lam: 0.95
+  entropy_coef: 0.005
+  desired_kl: 0.01
+  max_grad_norm: 1.0
+  value_loss_coef: 1.0
+  use_clipped_value_loss: true
+  clip_param: 0.2
+  normalize_advantage_per_mini_batch: false
+  rnd_cfg: null
+  symmetry_cfg: null
+  cenet_loss_weight: 1.0
+  velocity_loss_weight: 3.0
+  reconstruction_loss_weight: 1.0
+  kl_loss_weight: 1.0
+  kl_warmup_iterations: 300
+  vae_learning_rate: 0.0001
+  use_adaboot: false
+  adaboot_reward_window: 2048
+  adaboot_min_episodes: 32
+  adaboot_min_probability: 0.0
+  adaboot_max_probability: 1.0
+  adaboot_eps: 1.0e-06

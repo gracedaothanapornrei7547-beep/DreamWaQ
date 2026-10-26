@@ -1,0 +1,662 @@
+schema_version: 1
+robot:
+  name: go2
+  num_dofs: 12
+  policy_joint_names: &id008
+  - FL_hip_joint
+  - FL_thigh_joint
+  - FL_calf_joint
+  - FR_hip_joint
+  - FR_thigh_joint
+  - FR_calf_joint
+  - RL_hip_joint
+  - RL_thigh_joint
+  - RL_calf_joint
+  - RR_hip_joint
+  - RR_thigh_joint
+  - RR_calf_joint
+  backend_joint_names: &id009
+  - FR_hip_joint
+  - FR_thigh_joint
+  - FR_calf_joint
+  - FL_hip_joint
+  - FL_thigh_joint
+  - FL_calf_joint
+  - RR_hip_joint
+  - RR_thigh_joint
+  - RR_calf_joint
+  - RL_hip_joint
+  - RL_thigh_joint
+  - RL_calf_joint
+  joint_mapping: &id010
+  - 3
+  - 4
+  - 5
+  - 0
+  - 1
+  - 2
+  - 9
+  - 10
+  - 11
+  - 6
+  - 7
+  - 8
+control:
+  sim_dt: 0.005
+  decimation: 4
+  policy_dt: 0.02
+  stiffness: &id003
+  - 25.0
+  - 25.0
+  - 25.0
+  - 25.0
+  - 25.0
+  - 25.0
+  - 25.0
+  - 25.0
+  - 25.0
+  - 25.0
+  - 25.0
+  - 25.0
+  damping: &id004
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+commands:
+  base_velocity:
+    ranges:
+      lin_vel_x:
+      - -1.5
+      - 1.5
+      lin_vel_y:
+      - -0.6
+      - 0.6
+      ang_vel_z:
+      - -0.8
+      - 0.8
+action:
+  name: joint_pos
+  type: JointPositionAction
+  scale: &id005
+  - 0.25
+  - 0.25
+  - 0.25
+  - 0.25
+  - 0.25
+  - 0.25
+  - 0.25
+  - 0.25
+  - 0.25
+  - 0.25
+  - 0.25
+  - 0.25
+  offset: &id006
+  - 0.10000000149011612
+  - 0.800000011920929
+  - -1.5
+  - -0.10000000149011612
+  - 0.800000011920929
+  - -1.5
+  - 0.10000000149011612
+  - 1.0
+  - -1.5
+  - -0.10000000149011612
+  - 1.0
+  - -1.5
+  clip_lower: &id001
+  - -100.0
+  - -100.0
+  - -100.0
+  - -100.0
+  - -100.0
+  - -100.0
+  - -100.0
+  - -100.0
+  - -100.0
+  - -100.0
+  - -100.0
+  - -100.0
+  clip_upper: &id002
+  - 100.0
+  - 100.0
+  - 100.0
+  - 100.0
+  - 100.0
+  - 100.0
+  - 100.0
+  - 100.0
+  - 100.0
+  - 100.0
+  - 100.0
+  - 100.0
+observations:
+  groups:
+    dreamwaq_policy:
+      current_dim: 45
+      model_dim: 45
+      history_length: 1
+      history_order: oldest_to_newest
+      history_layout: term_major
+      terms:
+      - name: base_ang_vel
+        type: base_ang_vel
+        dim: 3
+        params: {}
+        clip:
+        - -100.0
+        - 100.0
+        scale:
+        - 0.20000000298023224
+        - 0.20000000298023224
+        - 0.20000000298023224
+      - name: projected_gravity
+        type: projected_gravity
+        dim: 3
+        params: {}
+        clip:
+        - -100.0
+        - 100.0
+        scale:
+        - 1.0
+        - 1.0
+        - 1.0
+      - name: velocity_commands
+        type: generated_commands
+        dim: 3
+        params:
+          command_name: base_velocity
+        clip:
+        - -100.0
+        - 100.0
+        scale: &id007
+        - 1.0
+        - 1.0
+        - 1.0
+      - name: joint_pos
+        type: joint_pos_rel
+        dim: 12
+        params:
+          asset_cfg:
+            name: robot
+            joint_names:
+            - FL_hip_joint
+            - FL_thigh_joint
+            - FL_calf_joint
+            - FR_hip_joint
+            - FR_thigh_joint
+            - FR_calf_joint
+            - RL_hip_joint
+            - RL_thigh_joint
+            - RL_calf_joint
+            - RR_hip_joint
+            - RR_thigh_joint
+            - RR_calf_joint
+            joint_ids:
+            - 0
+            - 4
+            - 8
+            - 1
+            - 5
+            - 9
+            - 2
+            - 6
+            - 10
+            - 3
+            - 7
+            - 11
+            fixed_tendon_names: null
+            fixed_tendon_ids: slice(None, None, None)
+            body_names: null
+            body_ids: slice(None, None, None)
+            object_collection_names: null
+            object_collection_ids: slice(None, None, None)
+            preserve_order: true
+        clip:
+        - -100.0
+        - 100.0
+        scale:
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+      - name: joint_vel
+        type: joint_vel_rel
+        dim: 12
+        params:
+          asset_cfg:
+            name: robot
+            joint_names:
+            - FL_hip_joint
+            - FL_thigh_joint
+            - FL_calf_joint
+            - FR_hip_joint
+            - FR_thigh_joint
+            - FR_calf_joint
+            - RL_hip_joint
+            - RL_thigh_joint
+            - RL_calf_joint
+            - RR_hip_joint
+            - RR_thigh_joint
+            - RR_calf_joint
+            joint_ids:
+            - 0
+            - 4
+            - 8
+            - 1
+            - 5
+            - 9
+            - 2
+            - 6
+            - 10
+            - 3
+            - 7
+            - 11
+            fixed_tendon_names: null
+            fixed_tendon_ids: slice(None, None, None)
+            body_names: null
+            body_ids: slice(None, None, None)
+            object_collection_names: null
+            object_collection_ids: slice(None, None, None)
+            preserve_order: true
+        clip:
+        - -100.0
+        - 100.0
+        scale:
+        - 0.05000000074505806
+        - 0.05000000074505806
+        - 0.05000000074505806
+        - 0.05000000074505806
+        - 0.05000000074505806
+        - 0.05000000074505806
+        - 0.05000000074505806
+        - 0.05000000074505806
+        - 0.05000000074505806
+        - 0.05000000074505806
+        - 0.05000000074505806
+        - 0.05000000074505806
+      - name: last_action
+        type: last_action
+        dim: 12
+        params: {}
+        clip:
+        - -100.0
+        - 100.0
+        scale:
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+    dreamwaq_policy_history:
+      current_dim: 45
+      model_dim: 225
+      history_length: 5
+      history_order: oldest_to_newest
+      history_layout: term_major
+      terms:
+      - name: base_ang_vel
+        type: base_ang_vel
+        dim: 3
+        params: {}
+        clip:
+        - -100.0
+        - 100.0
+        scale:
+        - 0.20000000298023224
+        - 0.20000000298023224
+        - 0.20000000298023224
+      - name: projected_gravity
+        type: projected_gravity
+        dim: 3
+        params: {}
+        clip:
+        - -100.0
+        - 100.0
+        scale:
+        - 1.0
+        - 1.0
+        - 1.0
+      - name: velocity_commands
+        type: generated_commands
+        dim: 3
+        params:
+          command_name: base_velocity
+        clip:
+        - -100.0
+        - 100.0
+        scale:
+        - 1.0
+        - 1.0
+        - 1.0
+      - name: joint_pos
+        type: joint_pos_rel
+        dim: 12
+        params:
+          asset_cfg:
+            name: robot
+            joint_names:
+            - FL_hip_joint
+            - FL_thigh_joint
+            - FL_calf_joint
+            - FR_hip_joint
+            - FR_thigh_joint
+            - FR_calf_joint
+            - RL_hip_joint
+            - RL_thigh_joint
+            - RL_calf_joint
+            - RR_hip_joint
+            - RR_thigh_joint
+            - RR_calf_joint
+            joint_ids:
+            - 0
+            - 4
+            - 8
+            - 1
+            - 5
+            - 9
+            - 2
+            - 6
+            - 10
+            - 3
+            - 7
+            - 11
+            fixed_tendon_names: null
+            fixed_tendon_ids: slice(None, None, None)
+            body_names: null
+            body_ids: slice(None, None, None)
+            object_collection_names: null
+            object_collection_ids: slice(None, None, None)
+            preserve_order: true
+        clip:
+        - -100.0
+        - 100.0
+        scale:
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+      - name: joint_vel
+        type: joint_vel_rel
+        dim: 12
+        params:
+          asset_cfg:
+            name: robot
+            joint_names:
+            - FL_hip_joint
+            - FL_thigh_joint
+            - FL_calf_joint
+            - FR_hip_joint
+            - FR_thigh_joint
+            - FR_calf_joint
+            - RL_hip_joint
+            - RL_thigh_joint
+            - RL_calf_joint
+            - RR_hip_joint
+            - RR_thigh_joint
+            - RR_calf_joint
+            joint_ids:
+            - 0
+            - 4
+            - 8
+            - 1
+            - 5
+            - 9
+            - 2
+            - 6
+            - 10
+            - 3
+            - 7
+            - 11
+            fixed_tendon_names: null
+            fixed_tendon_ids: slice(None, None, None)
+            body_names: null
+            body_ids: slice(None, None, None)
+            object_collection_names: null
+            object_collection_ids: slice(None, None, None)
+            preserve_order: true
+        clip:
+        - -100.0
+        - 100.0
+        scale:
+        - 0.05000000074505806
+        - 0.05000000074505806
+        - 0.05000000074505806
+        - 0.05000000074505806
+        - 0.05000000074505806
+        - 0.05000000074505806
+        - 0.05000000074505806
+        - 0.05000000074505806
+        - 0.05000000074505806
+        - 0.05000000074505806
+        - 0.05000000074505806
+        - 0.05000000074505806
+      - name: last_action
+        type: last_action
+        dim: 12
+        params: {}
+        clip:
+        - -100.0
+        - 100.0
+        scale:
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+actuator:
+  type: UnitreeActuator
+  velocity_x1: &id011
+  - 13.5
+  - 13.5
+  - 13.5
+  - 13.5
+  - 13.5
+  - 13.5
+  - 13.5
+  - 13.5
+  - 13.5
+  - 13.5
+  - 13.5
+  - 13.5
+  velocity_x2: &id012
+  - 30.0
+  - 30.0
+  - 30.0
+  - 30.0
+  - 30.0
+  - 30.0
+  - 30.0
+  - 30.0
+  - 30.0
+  - 30.0
+  - 30.0
+  - 30.0
+  effort_y1: &id013
+  - 20.200000762939453
+  - 20.200000762939453
+  - 20.200000762939453
+  - 20.200000762939453
+  - 20.200000762939453
+  - 20.200000762939453
+  - 20.200000762939453
+  - 20.200000762939453
+  - 20.200000762939453
+  - 20.200000762939453
+  - 20.200000762939453
+  - 20.200000762939453
+  effort_y2: &id014
+  - 23.399999618530273
+  - 23.399999618530273
+  - 23.399999618530273
+  - 23.399999618530273
+  - 23.399999618530273
+  - 23.399999618530273
+  - 23.399999618530273
+  - 23.399999618530273
+  - 23.399999618530273
+  - 23.399999618530273
+  - 23.399999618530273
+  - 23.399999618530273
+  friction_static: &id015
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  friction_dynamic: &id016
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  activation_velocity: &id017
+  - 0.009999999776482582
+  - 0.009999999776482582
+  - 0.009999999776482582
+  - 0.009999999776482582
+  - 0.009999999776482582
+  - 0.009999999776482582
+  - 0.009999999776482582
+  - 0.009999999776482582
+  - 0.009999999776482582
+  - 0.009999999776482582
+  - 0.009999999776482582
+  - 0.009999999776482582
+model:
+  files:
+    torchscript: policy.pt
+    onnx: policy.onnx
+  inputs:
+  - name: current_obs
+    observation_group: dreamwaq_policy
+    dim: 45
+  - name: history_obs
+    observation_group: dreamwaq_policy_history
+    dim: 225
+  outputs:
+  - name: actions
+    dim: 12
+  sha256:
+    torchscript: c5e74922f8f3632f33d29cee21f2a1e790260e5a38b8c14e0d35efb691fb459b
+    onnx: 1eff8bd8b924d491f34a44323a601311d22c6ac96156c3c33e281d0332afe81b
+rl_sar:
+  root_key: go2/bundle
+  model_name: policy.pt
+  dt: 0.005
+  decimation: 4
+  num_observations: 45
+  observations:
+  - ang_vel
+  - gravity_vec
+  - commands
+  - dof_pos
+  - dof_vel
+  - actions
+  observations_history:
+  - 4
+  - 3
+  - 2
+  - 1
+  - 0
+  observations_history_priority: term
+  observations_history_input_mode: separate
+  clip_obs: 100.0
+  clip_actions_lower: *id001
+  clip_actions_upper: *id002
+  rl_kp: *id003
+  rl_kd: *id004
+  num_of_dofs: 12
+  action_scale: *id005
+  action_offset: *id006
+  wheel_indices: []
+  lin_vel_scale: 1.0
+  ang_vel_scale: 0.20000000298023224
+  dof_pos_scale: 1.0
+  dof_vel_scale: 0.05000000074505806
+  commands_scale: *id007
+  commands_lower:
+  - -1.5
+  - -0.6
+  - -0.8
+  commands_upper:
+  - 1.5
+  - 0.6
+  - 0.8
+  default_dof_pos:
+  - 0.10000000149011612
+  - 0.800000011920929
+  - -1.5
+  - -0.10000000149011612
+  - 0.800000011920929
+  - -1.5
+  - 0.10000000149011612
+  - 1.0
+  - -1.5
+  - -0.10000000149011612
+  - 1.0
+  - -1.5
+  policy_joint_names: *id008
+  backend_joint_names: *id009
+  joint_mapping: *id010
+  actuator_model: unitree_torque_speed
+  actuator_velocity_x1: *id011
+  actuator_velocity_x2: *id012
+  actuator_effort_y1: *id013
+  actuator_effort_y2: *id014
+  actuator_friction_static: *id015
+  actuator_friction_dynamic: *id016
+  actuator_activation_velocity: *id017
+  torque_limits: *id014

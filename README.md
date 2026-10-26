@@ -4,6 +4,19 @@
 > **核心理论与架构精华手册**：关于 CENet 神经网络拓扑、45 维观测张量排布、AdaBoot 自适应速度自举、动力学前向世界模型推导等核心理论，请移步精读理论专篇 👉 [`dreamWaQ.md`](file:///home/rum/isaac/dreamwaq_lab/dreamWaQ.md)（*58 KB / 880+ 行完全教学手册*）。  
 > **当前文档定位**：**官方指引下的完整工程演进、调试实战全纪录与生产标准化手册（Production Debugging & Tuning Playbook）**。
 
+<div align="center">
+
+![Go2 DreamWaQ 15cm Stairs Summit](assets/dreamwaq_15cm_stairs_climb.gif)
+
+**Unitree Go2 基于 DreamWaQ ($\beta\text{-VAE}$ 动力学自编码世界模型) 纯本体感觉盲走实录**  
+*(平地激光直线助跑 $\to$ 0.3s 前瞻提膝连续翻越 5 阶 15cm 极限高台阶 $\to$ 天台平稳高速冲刺)*
+
+| 阶段 1：平地激光级直线助跑 ($x=-0.3 \to 1.2\text{m}$) | 阶段 2：0.3s 前瞻连续攻坚 15cm 台阶 ($z=0.35 \to 1.01\text{m}$) | 阶段 3：高台天台平稳冲刺 ($z=1.10\text{m}$, 侧偏 < 8mm) |
+| :---: | :---: | :---: |
+| ![平地助跑](assets/keyframe_1_flat_approach.png) | ![连续登阶](assets/keyframe_2_stair_climbing.png) | ![天台冲刺](assets/keyframe_3_summit_trot.png) |
+
+</div>
+
 ---
 
 ## 目录 (Table of Contents)

@@ -1,0 +1,3945 @@
+--- git status ---
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   scripts/rsl_rl/dreamwaq/dreamwaq_actor_critic.py
+	modified:   scripts/rsl_rl/dreamwaq/train_dreamwaq.py
+	modified:   source/dreamwaq_lab/dreamwaq_lab/robots/unitree_go2.py
+	modified:   source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/__init__.py
+	modified:   source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/agents/rsl_rl_dreamwaq_cfg.py
+	modified:   source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/dreamwaq_env_cfg.py
+	modified:   source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/go2_env_cfg.py
+	modified:   source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/mdp/rewards.py
+	modified:   source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/mdp/terminations.py
+	modified:   source/dreamwaq_lab/dreamwaq_lab/terrains/__init__.py
+	modified:   source/dreamwaq_lab/dreamwaq_lab/terrains/play_terrain_cfg.py
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	deploy/
+	scripts/rsl_rl/dreamwaq/eval_dreamwaq_fixed_terrain.py
+	scripts/rsl_rl/dreamwaq/eval_heading_lock_50m.py
+	source/dreamwaq_lab/dreamwaq_lab/terrains/straight_stairs.py
+	tool/
+	train_stage10_optimal.log
+	train_stage11_gold.log
+	train_stage12_flex_300iter.log
+	train_stage13_flat_purify_200iter.log
+	train_stage14_unified_300iter.log
+	train_stage9_smooth_150iter.log
+
+no changes added to commit (use "git add" and/or "git commit -a") 
+
+
+--- git diff ---
+diff --git a/scripts/rsl_rl/dreamwaq/dreamwaq_actor_critic.py b/scripts/rsl_rl/dreamwaq/dreamwaq_actor_critic.py
+index ab453da..bd660bc 100644
+--- a/scripts/rsl_rl/dreamwaq/dreamwaq_actor_critic.py
++++ b/scripts/rsl_rl/dreamwaq/dreamwaq_actor_critic.py
+@@ -185,6 +185,48 @@ class DreamWaQActorCritic(nn.Module):
+         self.last_cenet_outputs: CENetForwardOutput | None = None
+         Normal.set_default_validate_args(False)
+ 
++        # 构建 45 维单帧与 225 维时序历史的严格双向镜像置换与符号掩码 (用于 CENet 左右镜像等变损失)
++        single_frame_perm = [
++            0, 1, 2,        # ang_vel: roll, pitch, yaw
++            3, 4, 5,        # gravity: gx, gy, gz
++            6, 7, 8,        # cmd: vx, vy, wz
++            12, 13, 14,     # FL_jpos <- FR (hip, thigh, calf)
++            9, 10, 11,      # FR_jpos <- FL
++            18, 19, 20,     # RL_jpos <- RR
++            15, 16, 17,     # RR_jpos <- RL
++            24, 25, 26,     # FL_jvel <- FR
++            21, 22, 23,     # FR_jvel <- FL
++            30, 31, 32,     # RL_jvel <- RR
++            27, 28, 29,     # RR_jvel <- RL
++            36, 37, 38,     # FL_act <- FR
++            33, 34, 35,     # FR_act <- FL
++            42, 43, 44,     # RL_act <- RR
++            39, 40, 41,     # RR_act <- RL
++        ]
++        single_frame_sign = [
++            -1.0, 1.0, -1.0,  # ang_vel: roll(-), pitch(+), yaw(-)
++            1.0, -1.0, 1.0,   # gravity: gx(+), gy(-), gz(+)
++            1.0, -1.0, -1.0,  # cmd: vx(+), vy(-), wz(-)
++            -1.0, 1.0, 1.0,   # FL_jpos: hip(-), thigh(+), calf(+)
++            -1.0, 1.0, 1.0,   # FR_jpos: hip(-), thigh(+), calf(+)
++            -1.0, 1.0, 1.0,   # RL_jpos
++            -1.0, 1.0, 1.0,   # RR_jpos
++            -1.0, 1.0, 1.0,   # FL_jvel
++            -1.0, 1.0, 1.0,   # FR_jvel
++            -1.0, 1.0, 1.0,   # RL_jvel
++            -1.0, 1.0, 1.0,   # RR_jvel
++            -1.0, 1.0, 1.0,   # FL_act
++            -1.0, 1.0, 1.0,   # FR_act
++            -1.0, 1.0, 1.0,   # RL_act
++            -1.0, 1.0, 1.0,   # RR_act
++        ]
++        full_perm = [p + 45 * t for t in range(self.history_length) for p in single_frame_perm]
++        full_sign = single_frame_sign * self.history_length
++        self.register_buffer("history_mirror_perm", torch.tensor(full_perm, dtype=torch.long), persistent=False)
++        self.register_buffer("history_mirror_sign", torch.tensor(full_sign, dtype=torch.float32), persistent=False)
++        self.register_buffer("proprio_mirror_perm", torch.tensor(single_frame_perm, dtype=torch.long), persistent=False)
++        self.register_buffer("proprio_mirror_sign", torch.tensor(single_frame_sign, dtype=torch.float32), persistent=False)
++
+         print("DreamWaQ CENet:", self.cenet)
+         print("[DreamWaQ CENet Debug]")
+         print(f"history_len = {self.history_length}")
+@@ -589,16 +631,51 @@ class DreamWaQActorCritic(nn.Module):
+             reconstruction_loss = F.mse_loss(outputs.reconstruction, reconstruction_target)
+             kl_loss = DreamWaQCENet.kl_divergence(outputs.latent_mu, outputs.latent_logvar)
+ 
++        # --- 核心改进: 物理镜像等变自监督损失 (Physical Bilateral Mirror Equivariance Loss) ---
++        # 1. 对时序历史本体感知施加严格左右镜像翻转 flip(h_t)
++        history_obs = self.get_history_obs(obs)
++        history_flipped = history_obs[..., self.history_mirror_perm] * self.history_mirror_sign
++        outputs_flipped = self.cenet(history_flipped, sample_latent=False)
++
++        # 2. 显式线速度等变性约束: vx 保持, vy 符号严格反转 (-vy), vz 保持
++        # 物理本质: 机器人直行时左右输入近似对称，强约束 \hat{v}_y = -\hat{v}_y = 0，从源头彻底斩断幽灵侧漂偏置
++        vel_pred = outputs.estimated_velocity
++        vel_expected_flip = torch.stack([vel_pred[..., 0], -vel_pred[..., 1], vel_pred[..., 2]], dim=-1)
++
++        # 3. 干净本体感知重构等变性约束: 翻转输入的重构 与 原始重构的镜像翻转 严格等价
++        # Decoder(flip(h_t)) ≡ flip(Decoder(h_t))
++        recon_expected_flip = outputs.reconstruction[..., self.proprio_mirror_perm] * self.proprio_mirror_sign
++
++        if live_mask is not None and valid.any():
++            vel_equiv_loss = F.mse_loss(
++                outputs_flipped.estimated_velocity.reshape(valid.numel(), -1)[valid],
++                vel_expected_flip.reshape(valid.numel(), -1)[valid],
++            )
++            recon_equiv_loss = F.mse_loss(
++                outputs_flipped.reconstruction.reshape(valid.numel(), -1)[valid],
++                recon_expected_flip.reshape(valid.numel(), -1)[valid],
++            )
++        else:
++            vel_equiv_loss = F.mse_loss(outputs_flipped.estimated_velocity, vel_expected_flip)
++            recon_equiv_loss = F.mse_loss(outputs_flipped.reconstruction, recon_expected_flip)
++
++        # 严格加权：速度等变权重 2.0 (重惩侧偏)，重构等变权重 1.0
++        equiv_loss = 2.0 * vel_equiv_loss + 1.0 * recon_equiv_loss
++
++        equiv_loss_weight = 1.0
+         total_loss = (
+             float(velocity_loss_weight) * velocity_loss
+             + float(reconstruction_loss_weight) * reconstruction_loss
+             + float(kl_loss_weight) * self.beta_vae_kl_weight * kl_loss
++            + float(equiv_loss_weight) * equiv_loss
+         )
+         metrics = {
+             "cenet_loss": total_loss.detach().cpu().item(),
+             "cenet_velocity_loss": velocity_loss.detach().cpu().item(),
+             "cenet_reconstruction_loss": reconstruction_loss.detach().cpu().item(),
+             "cenet_kl_loss": kl_loss.detach().cpu().item(),
++            "cenet_vel_equiv_loss": vel_equiv_loss.detach().cpu().item(),
++            "cenet_recon_equiv_loss": recon_equiv_loss.detach().cpu().item(),
+             "cenet_beta_vae_kl_weight": self.beta_vae_kl_weight,
+         }
+         return total_loss, metrics
+@@ -617,7 +694,7 @@ class DreamWaQActorCritic(nn.Module):
+             "reconstruction_target_dim": self.reconstruction_target_dim,
+         }
+ 
+-    def load_state_dict(self, state_dict: dict, strict: bool = True) -> bool:
++    def load_state_dict(self, state_dict: dict, strict: bool = False) -> bool:
+         super().load_state_dict(state_dict, strict=strict)
+         return True
+ 
+diff --git a/scripts/rsl_rl/dreamwaq/train_dreamwaq.py b/scripts/rsl_rl/dreamwaq/train_dreamwaq.py
+index 23e3de8..ad8841d 100644
+--- a/scripts/rsl_rl/dreamwaq/train_dreamwaq.py
++++ b/scripts/rsl_rl/dreamwaq/train_dreamwaq.py
+@@ -181,7 +181,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
+         env = multi_agent_to_single_agent(env)
+ 
+     if agent_cfg.resume:
+-        resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
++        if os.path.isabs(agent_cfg.load_run) or os.path.exists(agent_cfg.load_run):
++            candidate_dir = agent_cfg.load_run
++            resume_path = os.path.join(candidate_dir, agent_cfg.load_checkpoint)
++        else:
++            search_roots = [
++                log_root_path,
++                os.path.abspath(os.path.join("logs", "rsl_rl", "unitree", "unitree_go2_dreamwaq_flat")),
++                os.path.abspath(os.path.join("logs", "rsl_rl", "unitree", "unitree_go2_dreamwaq_rough")),
++            ]
++            resume_path = None
++            for s_root in search_roots:
++                if os.path.exists(s_root):
++                    try:
++                        resume_path = get_checkpoint_path(s_root, agent_cfg.load_run, agent_cfg.load_checkpoint)
++                        break
++                    except Exception:
++                        pass
++            if resume_path is None:
++                raise ValueError(f"Could not find checkpoint for run '{agent_cfg.load_run}' in any of: {search_roots}")
+ 
+     if args_cli.video:
+         video_kwargs = {
+diff --git a/source/dreamwaq_lab/dreamwaq_lab/robots/unitree_go2.py b/source/dreamwaq_lab/dreamwaq_lab/robots/unitree_go2.py
+index a2e72fd..863d2cd 100644
+--- a/source/dreamwaq_lab/dreamwaq_lab/robots/unitree_go2.py
++++ b/source/dreamwaq_lab/dreamwaq_lab/robots/unitree_go2.py
+@@ -27,7 +27,7 @@ class UnitreeArticulationCfg(ArticulationCfg):
+ 
+     joint_sdk_names: list[str] = None
+ 
+-    soft_joint_pos_limit_factor = 0.9
++    soft_joint_pos_limit_factor = 0.96
+ 
+ # @configclass
+ # class UnitreeUsdFileCfg(sim_utils.UsdFileCfg):
+diff --git a/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/__init__.py b/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/__init__.py
+index 1067709..bfb1f6a 100644
+--- a/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/__init__.py
++++ b/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/__init__.py
+@@ -6,6 +6,33 @@ from . import agents
+ 
+ TASK_ID = "Unitree-Go2-DreamWaQ-Rough"
+ PLAY_TASK_ID = "Unitree-Go2-DreamWaQ-Rough-Play"
++FLAT_TASK_ID = "Unitree-Go2-DreamWaQ-Flat"
++FLAT_PLAY_TASK_ID = "Unitree-Go2-DreamWaQ-Flat-Play"
++STAIRS_TASK_ID = "Unitree-Go2-DreamWaQ-Stairs"
++STAIRS_PLAY_TASK_ID = "Unitree-Go2-DreamWaQ-Stairs-Play"
++MIXED_TASK_ID = "Unitree-Go2-DreamWaQ-Mixed"
++MIXED_PLAY_TASK_ID = "Unitree-Go2-DreamWaQ-Mixed-Play"
++SOFTLANDING_TASK_ID = "Unitree-Go2-DreamWaQ-SoftLanding"
++SOFTLANDING_PLAY_TASK_ID = "Unitree-Go2-DreamWaQ-SoftLanding-Play"
++DECOUPLED_TASK_ID = "Unitree-Go2-DreamWaQ-Decoupled"
++DECOUPLED_PLAY_TASK_ID = "Unitree-Go2-DreamWaQ-Decoupled-Play"
++SURGERY_TASK_ID = "Unitree-Go2-DreamWaQ-Surgery"
++SURGERY_PLAY_TASK_ID = "Unitree-Go2-DreamWaQ-Surgery-Play"
++EQUIVARIANT_TASK_ID = "Unitree-Go2-DreamWaQ-Equivariant"
++EQUIVARIANT_PLAY_TASK_ID = "Unitree-Go2-DreamWaQ-Equivariant-Play"
++EXTREME15CM_TASK_ID = "Unitree-Go2-DreamWaQ-Extreme15cm"
++EXTREME15CM_PLAY_TASK_ID = "Unitree-Go2-DreamWaQ-Extreme15cm-Play"
++SMOOTH_STAGE9_TASK_ID = "Unitree-Go2-DreamWaQ-Smooth-Stage9"
++SMOOTH_STAGE9_PLAY_TASK_ID = "Unitree-Go2-DreamWaQ-Smooth-Stage9-Play"
++OPTIMAL_STAGE10_TASK_ID = "Unitree-Go2-DreamWaQ-Optimal-Stage10"
++OPTIMAL_STAGE10_PLAY_TASK_ID = "Unitree-Go2-DreamWaQ-Optimal-Stage10-Play"
++GOLD_STAGE11_TASK_ID = "Unitree-Go2-DreamWaQ-Gold-Stage11"
++GOLD_STAGE11_PLAY_TASK_ID = "Unitree-Go2-DreamWaQ-Gold-Stage11-Play"
++STAGE13_FLAT_PURIFY_TASK_ID = "Unitree-Go2-DreamWaQ-FlatPurify-Stage13"
++STAGE13_FLAT_PURIFY_PLAY_TASK_ID = "Unitree-Go2-DreamWaQ-FlatPurify-Stage13-Play"
++STAGE14_UNIFIED_TASK_ID = "Unitree-Go2-DreamWaQ-Unified-Stage14"
++STAGE14_UNIFIED_PLAY_TASK_ID = "Unitree-Go2-DreamWaQ-Unified-Stage14-Play"
++
+ 
+ 
+ gym.register(
+@@ -27,3 +54,270 @@ gym.register(
+         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQRoughRunnerCfg",
+     },
+ )
++
++gym.register(
++    id=FLAT_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQFlatEnvCfg",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQFlatRunnerCfg",
++    },
++)
++
++gym.register(
++    id=FLAT_PLAY_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQFlatEnvCfg_PLAY",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQFlatRunnerCfg",
++    },
++)
++
++gym.register(
++    id=STAIRS_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQStairsEnvCfg",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQStairsRunnerCfg",
++    },
++)
++
++gym.register(
++    id=STAIRS_PLAY_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQStairsEnvCfg_PLAY",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQStairsRunnerCfg",
++    },
++)
++
++gym.register(
++    id=MIXED_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQMixedEnvCfg",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQMixedRunnerCfg",
++    },
++)
++
++gym.register(
++    id=MIXED_PLAY_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQMixedEnvCfg_PLAY",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQMixedRunnerCfg",
++    },
++)
++
++gym.register(
++    id=SOFTLANDING_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQSoftLandingEnvCfg",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQSoftLandingRunnerCfg",
++    },
++)
++
++gym.register(
++    id=SOFTLANDING_PLAY_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQSoftLandingEnvCfg_PLAY",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQSoftLandingRunnerCfg",
++    },
++)
++
++gym.register(
++    id=DECOUPLED_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQDecoupledEnvCfg",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQDecoupledRunnerCfg",
++    },
++)
++
++gym.register(
++    id=DECOUPLED_PLAY_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQDecoupledEnvCfg_PLAY",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQDecoupledRunnerCfg",
++    },
++)
++
++gym.register(
++    id=SURGERY_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQSurgeryEnvCfg",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQSurgeryRunnerCfg",
++    },
++)
++
++gym.register(
++    id=SURGERY_PLAY_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQSurgeryEnvCfg_PLAY",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQSurgeryRunnerCfg",
++    },
++)
++
++gym.register(
++    id=EQUIVARIANT_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQSurgeryEnvCfg",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQEquivariantStage7RunnerCfg",
++    },
++)
++
++gym.register(
++    id=EQUIVARIANT_PLAY_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQSurgeryEnvCfg_PLAY",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQEquivariantStage7RunnerCfg",
++    },
++)
++
++gym.register(
++    id=EXTREME15CM_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQExtremeStairs15cmEnvCfg",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQExtremeStairs15cmRunnerCfg",
++    },
++)
++
++gym.register(
++    id=EXTREME15CM_PLAY_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQExtremeStairs15cmEnvCfg_PLAY",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQExtremeStairs15cmRunnerCfg",
++    },
++)
++
++gym.register(
++    id=SMOOTH_STAGE9_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQSmoothStairsStage9EnvCfg",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQSmoothStairsStage9RunnerCfg",
++    },
++)
++
++gym.register(
++    id=SMOOTH_STAGE9_PLAY_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQSmoothStairsStage9EnvCfg_PLAY",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQSmoothStairsStage9RunnerCfg",
++    },
++)
++
++gym.register(
++    id=OPTIMAL_STAGE10_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQOptimalStage10EnvCfg",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQOptimalStage10RunnerCfg",
++    },
++)
++
++gym.register(
++    id=OPTIMAL_STAGE10_PLAY_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQOptimalStage10EnvCfg_PLAY",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQOptimalStage10RunnerCfg",
++    },
++)
++
++gym.register(
++    id=GOLD_STAGE11_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQStage11EnvCfg",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQStage11RunnerCfg",
++    },
++)
++
++gym.register(
++    id=GOLD_STAGE11_PLAY_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQStage11EnvCfg_PLAY",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQStage11RunnerCfg",
++    },
++)
++
++gym.register(
++    id=STAGE13_FLAT_PURIFY_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQStage13FlatPurifyEnvCfg",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQStage13FlatPurifyRunnerCfg",
++    },
++)
++
++gym.register(
++    id=STAGE13_FLAT_PURIFY_PLAY_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQStage13FlatPurifyEnvCfg_PLAY",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQStage13FlatPurifyRunnerCfg",
++    },
++)
++
++gym.register(
++    id=STAGE14_UNIFIED_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQStage14UnifiedEnvCfg",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQStage14UnifiedRunnerCfg",
++    },
++)
++
++gym.register(
++    id=STAGE14_UNIFIED_PLAY_TASK_ID,
++    entry_point="isaaclab.envs:ManagerBasedRLEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.dreamwaq_env_cfg:UnitreeGo2DreamWaQStage14UnifiedEnvCfg_PLAY",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_dreamwaq_cfg:UnitreeGo2DreamWaQStage14UnifiedRunnerCfg",
++    },
++)
++
++
++
++
++
++
++
+diff --git a/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/agents/rsl_rl_dreamwaq_cfg.py b/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/agents/rsl_rl_dreamwaq_cfg.py
+index ed81662..b4749e3 100644
+--- a/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/agents/rsl_rl_dreamwaq_cfg.py
++++ b/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/agents/rsl_rl_dreamwaq_cfg.py
+@@ -58,7 +58,7 @@ class UnitreeGo2DreamWaQRoughRunnerCfg(RslRlOnPolicyRunnerCfg):
+     seed = 1
+     num_steps_per_env = 24
+     max_iterations = 20000
+-    save_interval = 500
++    save_interval = 50
+     experiment_name = "unitree/unitree_go2_dreamwaq_rough"
+     obs_groups = {
+         "policy": ["dreamwaq_policy", "dreamwaq_policy_history"],
+@@ -88,11 +88,302 @@ class UnitreeGo2DreamWaQRoughRunnerCfg(RslRlOnPolicyRunnerCfg):
+         lam=0.95,
+         desired_kl=0.01,
+         max_grad_norm=1.0,
++        cenet_loss_weight=1.0,
++        velocity_loss_weight=3.0,          # 注入速度头损失权重补丁 3.0，使显式速度估计梯度充沛，根除符号倒挂
++        reconstruction_loss_weight=1.0,
++        kl_loss_weight=1.0,
++        vae_learning_rate=1.0e-3,
+     )
+ 
+ 
++@configclass
++class UnitreeGo2DreamWaQFlatRunnerCfg(RslRlOnPolicyRunnerCfg):
++    """Go2 DreamWaQ 纯平地冷启动步态定型与 CENet 速度感知校准 Runner 配置。"""
++
++    seed = 1
++    num_steps_per_env = 24
++    max_iterations = 300
++    save_interval = 25
++    experiment_name = "unitree/unitree_go2_dreamwaq_flat"
++    obs_groups = {
++        "policy": ["dreamwaq_policy", "dreamwaq_policy_history"],
++        "critic": ["dreamwaq_critic"],
++    }
++
++    policy = UnitreeGo2DreamWaQActorCriticCfg(
++        init_noise_std=1.0,
++        noise_std_type="scalar",
++        actor_obs_normalization=False,
++        critic_obs_normalization=False,
++        actor_hidden_dims=[512, 256, 128],
++        critic_hidden_dims=[512, 256, 128],
++        activation="elu",
++        beta_vae_kl_weight=0.01,
++    )
++
++    algorithm = UnitreeGo2DreamWaQAlgorithmCfg(
++        value_loss_coef=1.0,
++        use_clipped_value_loss=True,
++        clip_param=0.2,
++        entropy_coef=0.01,
++        num_learning_epochs=5,
++        num_mini_batches=4,
++        learning_rate=2.0e-4,              # 微调降温学习率 2.0e-4，平稳吸收残余力矩
++        schedule="adaptive",
++        gamma=0.99,
++        lam=0.95,
++        desired_kl=0.01,
++        max_grad_norm=1.0,
++        cenet_loss_weight=1.0,
++        velocity_loss_weight=3.0,          # 注入速度头损失权重补丁 3.0，彻底根除符号倒挂
++        reconstruction_loss_weight=1.0,
++        kl_loss_weight=1.0,
++        kl_warmup_iterations=300,          # 300 轮微调退火
++        vae_learning_rate=2.0e-4,
++    )
++
++
++@configclass
++class UnitreeGo2DreamWaQStairsRunnerCfg(RslRlOnPolicyRunnerCfg):
++    """Go2 DreamWaQ 两阶段微调第二步：台阶/楼梯攻坚专项微调 Runner 配置。"""
++
++    seed = 1
++    num_steps_per_env = 24
++    max_iterations = 1000
++    save_interval = 25
++    experiment_name = "unitree/unitree_go2_dreamwaq_stairs_straight_corridor"
++    obs_groups = {
++        "policy": ["dreamwaq_policy", "dreamwaq_policy_history"],
++        "critic": ["dreamwaq_critic"],
++    }
++
++    policy = UnitreeGo2DreamWaQActorCriticCfg(
++        init_noise_std=1.0,
++        noise_std_type="scalar",
++        actor_obs_normalization=False,
++        critic_obs_normalization=False,
++        actor_hidden_dims=[512, 256, 128],
++        critic_hidden_dims=[512, 256, 128],
++        activation="elu",
++        beta_vae_kl_weight=0.01,
++    )
++
++    algorithm = UnitreeGo2DreamWaQAlgorithmCfg(
++        value_loss_coef=1.0,
++        use_clipped_value_loss=True,
++        clip_param=0.2,
++        entropy_coef=0.01,
++        num_learning_epochs=5,
++        num_mini_batches=4,
++        learning_rate=3.0e-4,              # 阶梯攻坚微调降温学习率 3.0e-4，平滑吸收台阶高频反力，保护 Trot 底模
++        schedule="adaptive",
++        gamma=0.99,
++        lam=0.95,
++        desired_kl=0.01,
++        max_grad_norm=1.0,
++        cenet_loss_weight=1.0,
++        velocity_loss_weight=3.0,          # 注入速度头损失权重补丁 3.0，彻底根除符号倒挂
++        reconstruction_loss_weight=1.0,
++        kl_loss_weight=1.0,
++        kl_warmup_iterations=500,          # 阶梯微调 KL 预热
++        vae_learning_rate=3.0e-4,
++    )
++
++
++@configclass
++class UnitreeGo2DreamWaQMixedRunnerCfg(RslRlOnPolicyRunnerCfg):
++    """Go2 DreamWaQ 第三阶段：平地+楼梯混合长廊多任务融合微调 Runner 配置。"""
++
++    seed = 1
++    num_steps_per_env = 24
++    max_iterations = 500
++    save_interval = 25
++    experiment_name = "unitree/unitree_go2_dreamwaq_mixed_stage3"
++    obs_groups = {
++        "policy": ["dreamwaq_policy", "dreamwaq_policy_history"],
++        "critic": ["dreamwaq_critic"],
++    }
++
++    policy = UnitreeGo2DreamWaQActorCriticCfg(
++        init_noise_std=0.8,
++        noise_std_type="scalar",
++        actor_obs_normalization=False,
++        critic_obs_normalization=False,
++        actor_hidden_dims=[512, 256, 128],
++        critic_hidden_dims=[512, 256, 128],
++        activation="elu",
++        beta_vae_kl_weight=0.01,
++    )
++
++    algorithm = UnitreeGo2DreamWaQAlgorithmCfg(
++        value_loss_coef=1.0,
++        use_clipped_value_loss=True,
++        clip_param=0.2,
++        entropy_coef=0.008,
++        num_learning_epochs=5,
++        num_mini_batches=4,
++        learning_rate=2.0e-4,
++        schedule="adaptive",
++        gamma=0.99,
++        lam=0.95,
++        desired_kl=0.01,
++        max_grad_norm=1.0,
++        cenet_loss_weight=1.0,
++        velocity_loss_weight=3.0,
++        reconstruction_loss_weight=1.0,
++        kl_loss_weight=1.0,
++        kl_warmup_iterations=300,
++        vae_learning_rate=2.0e-4,
++    )
++
++
++@configclass
++class UnitreeGo2DreamWaQSoftLandingRunnerCfg(RslRlOnPolicyRunnerCfg):
++    """Go2 DreamWaQ 第四阶段：足端软着陆阻尼微调 Runner 配置 (压进 <10mm 黄金线)。"""
++
++    seed = 1
++    num_steps_per_env = 24
++    max_iterations = 300
++    save_interval = 25
++    experiment_name = "unitree/unitree_go2_dreamwaq_softlanding_stage4"
++    obs_groups = {
++        "policy": ["dreamwaq_policy", "dreamwaq_policy_history"],
++        "critic": ["dreamwaq_critic"],
++    }
++
++    policy = UnitreeGo2DreamWaQActorCriticCfg(
++        init_noise_std=0.6,
++        noise_std_type="scalar",
++        actor_obs_normalization=False,
++        critic_obs_normalization=False,
++        actor_hidden_dims=[512, 256, 128],
++        critic_hidden_dims=[512, 256, 128],
++        activation="elu",
++        beta_vae_kl_weight=0.01,
++    )
++
++    algorithm = UnitreeGo2DreamWaQAlgorithmCfg(
++        value_loss_coef=1.0,
++        use_clipped_value_loss=True,
++        clip_param=0.2,
++        entropy_coef=0.005,
++        num_learning_epochs=5,
++        num_mini_batches=4,
++        learning_rate=1.0e-4,              # 精准微调降温学习率 1.0e-4
++        schedule="adaptive",
++        gamma=0.99,
++        lam=0.95,
++        desired_kl=0.01,
++        max_grad_norm=1.0,
++        cenet_loss_weight=1.0,
++        velocity_loss_weight=3.0,
++        reconstruction_loss_weight=1.0,
++        kl_loss_weight=1.0,
++        kl_warmup_iterations=300,
++        vae_learning_rate=1.0e-4,
++    )
++
++
++@configclass
++class UnitreeGo2DreamWaQDecoupledRunnerCfg(UnitreeGo2DreamWaQSoftLandingRunnerCfg):
++    """Go2 DreamWaQ 第五阶段：解耦平地俯仰刚性锁与双向限幅足端净空 Runner 配置。"""
++
++    experiment_name = "unitree/unitree_go2_dreamwaq_decoupled_stage5"
++    max_iterations = 300
++    save_interval = 25
++
++
++@configclass
++class UnitreeGo2DreamWaQSurgeryRunnerCfg(UnitreeGo2DreamWaQDecoupledRunnerCfg):
++    """Go2 DreamWaQ 第六阶段：全域等变镜像对称与前肢双向对中硬手术 Runner 配置。"""
++
++    experiment_name = "unitree/unitree_go2_dreamwaq_surgery_stage6"
++    max_iterations = 150
++    save_interval = 25
++
++
++@configclass
++class UnitreeGo2DreamWaQEquivariantStage7RunnerCfg(UnitreeGo2DreamWaQSurgeryRunnerCfg):
++    """Go2 DreamWaQ 第七阶段：CENet 左右镜像等变 + 对角功耗方差硬约束大一统终极对齐 Runner。"""
++
++    experiment_name = "unitree/unitree_go2_dreamwaq_equivariant_stage7"
++    max_iterations = 200
++    save_interval = 25
++
++
++@configclass
++class UnitreeGo2DreamWaQExtremeStairs15cmRunnerCfg(UnitreeGo2DreamWaQEquivariantStage7RunnerCfg):
++    """Go2 DreamWaQ 第八阶段：15cm 极限高台阶自适应提膝攻坚 Runner。"""
++
++    experiment_name = "unitree/unitree_go2_dreamwaq_extreme15cm_stage8"
++    max_iterations = 150
++    save_interval = 25
++
++
++@configclass
++class UnitreeGo2DreamWaQSmoothStairsStage9RunnerCfg(UnitreeGo2DreamWaQExtremeStairs15cmRunnerCfg):
++    """Go2 DreamWaQ 第九阶段：终极平滑与激光级直行大一统手术 Runner 配置。"""
++
++    experiment_name = "unitree/unitree_go2_dreamwaq_smooth_stage9"
++    max_iterations = 150
++    save_interval = 25
++
++
++@configclass
++class UnitreeGo2DreamWaQOptimalStage10RunnerCfg(UnitreeGo2DreamWaQSmoothStairsStage9RunnerCfg):
++    """Go2 DreamWaQ 第十阶段：0 网络修改 · 纯物理与等变 Loss 级最优解 Runner 配置。"""
++
++    experiment_name = "unitree/unitree_go2_dreamwaq_optimal_stage10"
++    max_iterations = 150
++    save_interval = 25
++
++
++@configclass
++class UnitreeGo2DreamWaQStage11RunnerCfg(UnitreeGo2DreamWaQOptimalStage10RunnerCfg):
++    """Go2 DreamWaQ 第十一阶段：黄金基准手术加训 Runner 配置 (500 轮)。"""
++
++    experiment_name = "unitree/unitree_go2_dreamwaq_gold_stage11"
++    max_iterations = 500
++    save_interval = 25
++
++
++@configclass
++class UnitreeGo2DreamWaQStage13FlatPurifyRunnerCfg(UnitreeGo2DreamWaQFlatRunnerCfg):
++    """Go2 DreamWaQ 第十三阶段：纯平地镜像等变洗髓 Runner 配置 (200 轮)。"""
++
++    experiment_name = "unitree/unitree_go2_dreamwaq_flat_purify_stage13"
++    max_iterations = 200
++    save_interval = 25
++
++
++@configclass
++class UnitreeGo2DreamWaQStage14UnifiedRunnerCfg(UnitreeGo2DreamWaQOptimalStage10RunnerCfg):
++    """Go2 DreamWaQ 第十四阶段：大一统黄金融合加训 Runner 配置 (300 轮)。"""
++
++    experiment_name = "unitree/unitree_go2_dreamwaq_unified_stage14"
++    max_iterations = 300
++    save_interval = 25
++
++
+ __all__ = [
+     "UnitreeGo2DreamWaQActorCriticCfg",
+     "UnitreeGo2DreamWaQAlgorithmCfg",
+     "UnitreeGo2DreamWaQRoughRunnerCfg",
++    "UnitreeGo2DreamWaQFlatRunnerCfg",
++    "UnitreeGo2DreamWaQStairsRunnerCfg",
++    "UnitreeGo2DreamWaQMixedRunnerCfg",
++    "UnitreeGo2DreamWaQSoftLandingRunnerCfg",
++    "UnitreeGo2DreamWaQDecoupledRunnerCfg",
++    "UnitreeGo2DreamWaQSurgeryRunnerCfg",
++    "UnitreeGo2DreamWaQEquivariantStage7RunnerCfg",
++    "UnitreeGo2DreamWaQExtremeStairs15cmRunnerCfg",
++    "UnitreeGo2DreamWaQSmoothStairsStage9RunnerCfg",
++    "UnitreeGo2DreamWaQOptimalStage10RunnerCfg",
++    "UnitreeGo2DreamWaQStage11RunnerCfg",
++    "UnitreeGo2DreamWaQStage13FlatPurifyRunnerCfg",
++    "UnitreeGo2DreamWaQStage14UnifiedRunnerCfg",
+ ]
++
++
++
++
+diff --git a/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/dreamwaq_env_cfg.py b/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/dreamwaq_env_cfg.py
+index c79f2ed..b9a0e7c 100644
+--- a/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/dreamwaq_env_cfg.py
++++ b/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/dreamwaq_env_cfg.py
+@@ -3,55 +3,120 @@
+ #
+ # SPDX-License-Identifier: Apache-2.0
+ 
+-"""Independent Unitree Go2 DreamWaQ rough/play task configs."""
++"""宇树 Go2 四足机器人 DreamWaQ 复杂地形（Rough-Terrain）任务环境配置。
+ 
++【配置架构与定位】
++1. 继承自 UnitreeGo2DreamWaQBaseEnvCfg，专职负责多地形训练集（Curriculum Sub-terrains）、
++   域随机化（Domain Randomization / Events）以及运动性能奖励函数权重（Reward Weights）的特化调优。
++2. DreamWaQ 核心思想：通过 VAE / CENet 在无外部视觉时隐式重构环境与外界扰动，因此训练环境需提供
++   高挑战性的地形与物理扰动，迫使策略建立对地形高程差和外力扰动的内在动力学鲁棒表征。
++"""
++
++from isaaclab.terrains import MeshPlaneTerrainCfg
+ from isaaclab.utils import configclass
+ 
+-from dreamwaq_lab.terrains import apply_play_terrain
++from dreamwaq_lab.terrains import MeshStraightAscendingStairsTerrainCfg, apply_play_terrain
+ 
+ from .go2_env_cfg import BASE_HEIGHT_TARGET, UnitreeGo2DreamWaQBaseEnvCfg
++from .. import mdp
+ 
+ 
+ @configclass
+ class UnitreeGo2DreamWaQRoughEnvCfg(UnitreeGo2DreamWaQBaseEnvCfg):
+-    """Rough-terrain DreamWaQ task for Unitree Go2."""
++    """宇树 Go2 复杂地形训练配置（针对台阶、斜坡、非结构化崎岖路面的全地形强化学习）。"""
+ 
+     def __post_init__(self):
+         super().__post_init__()
+ 
+-        # 设置每种地形的比例
++        # ==============================================================================
++        # 1. 多地形分布与难度范围配置 (Terrain Distribution & Geometric Ranges)
++        # ==============================================================================
++        # 【机制说明】：
++        # - 所有地形由 Isaac Lab TerrainGenerator 按 proportion 比例混合生成网格矩阵（Mesh）。
++        # - 课程机制（Curriculum）会在各地形的最小与最大几何参数之间按等级（Level 0~9）进行线性插值。
++        # ------------------------------------------------------------------------------
++
++        # --- 地形类型比例 (Sum 应当等于 1.0) ---
++        # 【正向金字塔台阶 (上楼梯)】：强化抬腿高度与前向冲量
++        # 【调参指南】：若爬楼梯能力偏弱可增至 0.35；过高会导致机器狗在平地上过度踏步
+         self.scene.terrain.terrain_generator.sub_terrains["pyramid_stairs"].proportion = 0.25
++
++        # 【倒置金字塔台阶 (下楼梯)】：强化后倾重力支撑与膝关节防挫屈能力
++        # 【调参指南】：下楼梯容易发生俯冲倒地（Pitch倾覆），调参时可与上楼梯维持 1:1 对等比例
+         self.scene.terrain.terrain_generator.sub_terrains["pyramid_stairs_inv"].proportion = 0.25
+-        self.scene.terrain.terrain_generator.sub_terrains["boxes"].proportion = 0.1
+-        self.scene.terrain.terrain_generator.sub_terrains["random_rough"].proportion = 0.2
+-        self.scene.terrain.terrain_generator.sub_terrains["hf_pyramid_slope"].proportion = 0.1
+-        self.scene.terrain.terrain_generator.sub_terrains["hf_pyramid_slope_inv"].proportion = 0.1
+-        # 金字塔形楼梯
+-        self.scene.terrain.terrain_generator.sub_terrains["pyramid_stairs"].step_height_range = (0.03, 0.25)  # 台阶高度改为5-12cm
+-        # 倒置金字塔形楼梯
+-        self.scene.terrain.terrain_generator.sub_terrains["pyramid_stairs_inv"].step_height_range = (0.03, 0.25)  # 台阶高度改为5-12cm
+-        # 方块
+-        self.scene.terrain.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.02, 0.06)  # 方块高度改为1-5cm
+-        # 粗糙地形
+-        self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_range = (0.02, 0.06) # 随机凹凸：高度变化幅度 (0.01, 0.06) 
+-        self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01          # 随机凹凸：离散高度步长（相当于高度只有0.01,0.02,0.03,0.04,0.05，0.06）
+-        # 上斜坡地形
+-        self.scene.terrain.terrain_generator.sub_terrains["hf_pyramid_slope"].slope_range = (0.0, 0.35)      # 坡度  arctan0.2=11.3度，arctan0.3=16.7度
+-        # 下斜坡地形
+-        self.scene.terrain.terrain_generator.sub_terrains["hf_pyramid_slope_inv"].slope_range = (0.0, 0.35)  # 坡度
+-
+-
+-        ### --- Events 随机事件设置 --- ###
++
++        # 【离散方块障碍 (Discrete Boxes)】：模拟碎石、路面凸起，考验离散步态适应
++        # 【调参指南】：保持 0.10 即可；比例过高易导致机器狗学出停滞防滑的小碎步
++        self.scene.terrain.terrain_generator.sub_terrains["boxes"].proportion = 0.10
++
++        # 【随机连续粗糙路面 (Random Rough)】：连续微小起伏，压制高频足端冲击
++        # 【调参指南】：提供高频触地阻尼感知，推荐 0.15~0.25
++        self.scene.terrain.terrain_generator.sub_terrains["random_rough"].proportion = 0.20
++
++        # 【金字塔上斜坡 (Slope Up)】：测试持续爬坡力矩与机身俯仰重心自适应
++        # 【调参指南】：0.10 足够覆盖坡面倾斜感知
++        self.scene.terrain.terrain_generator.sub_terrains["hf_pyramid_slope"].proportion = 0.10
++
++        # 【倒置金字塔下斜坡 (Slope Down)】：测试坡面下行制动稳定性
++        # 【调参指南】：与上坡保持 1:1，维持纵向受力对称性
++        self.scene.terrain.terrain_generator.sub_terrains["hf_pyramid_slope_inv"].proportion = 0.10
++
++        # --- 地形几何难度范围 (Level 0 对应下限，Level 9 对应上限) ---
++        # 【金字塔台阶高度】：(最小 0.03m ~ 最大 0.25m)
++        # 【物理机理】：Go2 小腿有效臂长约 0.21m，台阶超过 0.18m 即进入极限攀爬工况。
++        # 【调参经验】：若初期训练收敛缓慢，可将上限保守设为 0.18m；若要冲击极限台阶再放宽至 0.25m。
++        self.scene.terrain.terrain_generator.sub_terrains["pyramid_stairs"].step_height_range = (0.03, 0.25)
++        self.scene.terrain.terrain_generator.sub_terrains["pyramid_stairs_inv"].step_height_range = (0.03, 0.25)
++
++        # 【离散方块障碍高度】：(最小 0.02m ~ 最大 0.06m)
++        # 【调参经验】：大于 0.08m 易直接卡住足端球体，引发大腿撞击惩罚，维持在 2~6cm 为宜。
++        self.scene.terrain.terrain_generator.sub_terrains["boxes"].grid_height_range = (0.02, 0.06)
++
++        # 【随机粗糙地形噪声范围与离散步长】：
++        # 【物理机理】：noise_range 决定凹凸波幅，noise_step 决定离散台阶颗粒度。
++        # 【调参经验】：保持 2~6cm 扰动即可迫使网络自适应调整四足虚拟阻抗。
++        self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_range = (0.02, 0.06)
++        self.scene.terrain.terrain_generator.sub_terrains["random_rough"].noise_step = 0.01
++
++        # 【斜坡坡度范围】：(0.0 ~ 0.35 rad，即 0° ~ 20.0°)
++        # 【调参经验】：Go2 橡胶脚垫摩擦极限下最大爬坡约 25°，0.35 rad（约20°）兼顾安全性与鲁棒性。
++        self.scene.terrain.terrain_generator.sub_terrains["hf_pyramid_slope"].slope_range = (0.0, 0.35)
++        self.scene.terrain.terrain_generator.sub_terrains["hf_pyramid_slope_inv"].slope_range = (0.0, 0.35)
++
++
++        # ==============================================================================
++        # 2. 域随机化事件配置 (Domain Randomization / Events)
++        # ==============================================================================
++        # 【机制说明】：
++        # - 在仿真中主动注入传感器噪声、动力学参数扰动与外力冲击，以消除 Sim-to-Real 的现实差距（Reality Gap）。
++        # ------------------------------------------------------------------------------
++
++        # 【地面动/静摩擦因数随机化】：(0.4 ~ 1.25)
++        # 【物理机理】：涵盖从光滑湿瓷砖（0.4）到高抓地力橡胶跑道（1.25）的真实摩擦力范围。
++        # 【调参避坑】：下限不宜低于 0.2（会导致策略过早放弃前进转为趴地防滑）；上限不宜超过 1.5。
+         self.events.physics_material.params["static_friction_range"] = (0.4, 1.25)
+         self.events.physics_material.params["dynamic_friction_range"] = (0.4, 1.25)
++
++        # 【机身附加质量随机化】：(-0.5kg ~ +2.0kg)
++        # 【物理机理】：Go2 整机空载约 15kg，此范围模拟电池压降重量差、外部背负负载（计算模块/雷达等）。
++        # 【调参避坑】：若要背负机械臂等重物，可调大至 (+1.0, +5.0kg) 并配合调大电机驱动增益。
+         self.events.add_base_mass.params["mass_distribution_params"] = (-0.5, 2.0)
++
++        # 【机身质心位置偏移随机化 (CoM Offset)】：X轴 ±5cm, Y轴 ±2cm, Z轴 ±2cm
++        # 【物理机理】：打破物理完美对称性，强迫策略学会抵抗重心偏移带来的非对称倾覆力矩。
++        # 【调参经验】：X 轴（前后）容忍度较大；Y 轴（左右）若给得过大（如 >0.05m）易导致机器狗单侧瘫痪。
+         self.events.base_com.params["com_range"] = {
+             "x": (-0.05, 0.05),
+             "y": (-0.02, 0.02),
+             "z": (-0.02, 0.02),
+         }
++
++        # 【重置时持续外力与外力矩】：常态重置时保持 0，突发扰动由 push_robot 事件负责。
+         self.events.base_external_force_torque.params["force_range"] = (0.0, 0.0)
+         self.events.base_external_force_torque.params["torque_range"] = (0.0, 0.0)
++
++        # 【初始机身位姿与速度重置】：
++        # 【物理机理】：位置轻微抖动（X/Y ±0.5m）防止记忆固定台阶位置；全向偏航角（Yaw ±π）迫使网络学会全方位调头。
+         self.events.reset_base.params = {
+             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
+             "velocity_range": {
+@@ -63,61 +128,104 @@ class UnitreeGo2DreamWaQRoughEnvCfg(UnitreeGo2DreamWaQBaseEnvCfg):
+                 "yaw": (0.0, 0.0),
+             },
+         }
++
++        # 【初始关节角度缩放扰动】：(0.8 ~ 1.2)
++        # 【物理机理】：每次重生时不以绝对标称角度站立，增强非标准初始姿态下的自救起身能力。
+         self.events.reset_robot_joints.params["position_range"] = (0.8, 1.2)
+         self.events.reset_robot_joints.params["velocity_range"] = (0.0, 0.0)
++
++        # 【电机驱动刚度 (Kp) 与阻尼 (Kd) 缩放随机化】：(0.9 ~ 1.1)
++        # 【物理机理】：模拟电机温升、母线电压波动与各关节执行器响应特性的个体差异（±10% 不确定性）。
+         self.events.robot_joint_stiffness_and_damping.params["stiffness_distribution_params"] = (0.9, 1.1)
+         self.events.robot_joint_stiffness_and_damping.params["damping_distribution_params"] = (0.9, 1.1)
++
++        # 【运行中随机速度脉冲冲击 (Push Robot)】：X轴 ±0.3m/s, Y轴 ±0.1m/s
++        # 【物理机理】：模拟行进中受到侧向踢击或踩空突发冲量，激发快速侧跨步（Cross-step recovery）平衡反射。
+         self.events.push_robot.params["velocity_range"] = {"x": (-0.3, 0.3), "y": (-0.1, 0.1)}
+ 
+ 
+-        ### --- Rewards 奖励设置 --- ###
+-        self.rewards.track_lin_vel_xy_exp.weight = 1.75
+-        self.rewards.track_ang_vel_z_exp.weight = 0.75
++        # ==============================================================================
++        # 2.5 运动指令采样配置 (对齐 WaxberryS 标杆，全向全速对称采样)
++        # ==============================================================================
++        # 【物理机理】：全向速度指令 (-0.8~1.0, -0.8~0.8, -1.0~1.0) 迫使机器狗以相同概率承受左/右转、
++        # 左/右侧行压力，任何单侧发力或代偿偏向都会在反向指令下遭受巨大惩罚，天然从物理机制层面逼出对称 Trot！
++        self.curriculum.command_ranges = None
++        self.commands.base_velocity.ranges.lin_vel_x = (-0.8, 1.0)
++        self.commands.base_velocity.ranges.lin_vel_y = (-0.8, 0.8)
++        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
++        self.commands.base_velocity.rel_standing_envs = 0.05
++
++        # ==============================================================================
++        # 3. 强化学习奖励函数权重配置 (对标 WaxberryS 黄金标准)
++        # ==============================================================================
++        # --- 核心任务目标：指令速度跟踪 (对标 WaxberryS: 1.0 / 0.5) ---
++        self.rewards.track_lin_vel_xy_exp.weight = 1.0
++        self.rewards.track_ang_vel_z_exp.weight = 0.5
++
++        # --- 姿态与振荡抑制 (抗晃动核心防线) ---
+         self.rewards.lin_vel_z_l2.weight = -2.0
+         self.rewards.ang_vel_xy_l2.weight = -0.05
+-        self.rewards.flat_orientation_l2.weight = -0.2
++        self.rewards.flat_orientation_l2.weight = -0.20
+ 
++        # --- 执行器平滑性与硬件寿命保护 ---
+         self.rewards.dof_acc_l2.weight = -2.5e-7
+         self.rewards.joint_power_l1.weight = -2.0e-5
++
++        # --- 机身相对高度 (对标 0.32m 黄金站高) ---
+         self.rewards.base_height_relative_l2.weight = -1.0
+-        self.rewards.base_height_relative_l2.params["target_height"] = BASE_HEIGHT_TARGET
++        self.rewards.base_height_relative_l2.params["target_height"] = 0.32
+ 
+-        self.rewards.terrain_relative_foot_clearance_l1.weight = -0.1
++        # --- 足端清除度与地形交互 (对齐 WaxberryS: 降回 -0.01，根治样本一暴躁砸腿) ---
++        self.rewards.terrain_relative_foot_clearance_l1.weight = -0.01
+         self.rewards.terrain_relative_foot_clearance_l1.params["target_clearance"] = 0.06
+-        #self.rewards.paper_foot_clearance_l2.weight = -0.01
+-        #self.rewards.paper_foot_clearance_l2.params["target_height"] = 0.05
+-        #self.rewards.paper_foot_clearance_l2.params["nominal_base_height"] = 0.335
+         self.rewards.paper_foot_clearance_l2 = None
+ 
++        # --- 动作平滑度 (Sim-to-Real 移植基石) ---
+         self.rewards.action_rate_l2.weight = -0.01
+         self.rewards.action_smoothness_l2.weight = -0.01
++
++        # --- 关节软限位超限惩罚 ---
+         self.rewards.dof_pos_limits.weight = -1.0
+-        self.rewards.stand_still_joint_deviation_l1.weight = -0.2
+ 
+-        self.rewards.undesired_contacts.weight = -0.2
++        # --- 静止指令时关节标称位姿锁定惩罚 ---
++        self.rewards.stand_still_joint_deviation_l1.weight = -0.20
++
++        # --- 非预期接触惩罚 (撞击防护) ---
++        self.rewards.undesired_contacts.weight = -0.20
+         self.rewards.undesired_contacts.params["sensor_cfg"].body_names = [
+             ".*thigh",
+             ".*calf",
+         ]
+-        #self.rewards.undesired_contacts = None
+ 
+-        self.rewards.feet_regulation.weight = -0.5
+-        #self.rewards.feet_regulation = None
+-
+-        self.rewards.dof_torques_l2 = None
+-        self.rewards.foot_clearance_reward = None
+-        self.rewards.feet_air_time = None
+-        self.rewards.dof_vel_l2 = None
+-        self.rewards.lin_vel_xy_orthogonal_l2 = None
+-        self.rewards.feet_slide = None
+-        self.rewards.foot_swing_height_l2 = None
+-        self.rewards.feet_air_time_limit = None
++        # --- 核心恢复：WaxberryS 髋关节姿态锁 (hip_pos = -0.1，根除八字脚外展与偏航不对称) ---
++        self.rewards.hip_pos_deviation_l1.weight = -0.10
+ 
++        # --- 彻底拆除带有数学漏洞的手工惩罚项与多余项 ---
++        self.rewards.joint_diagonal_symmetry_l2.weight = 0.0
++        self.rewards.feet_air_time_variance.weight = 0.0
++        self.rewards.feet_regulation = None
++        self.rewards.lin_vel_xy_orthogonal_l2.weight = 0.0
++        self.rewards.dof_torques_l2 = None          # 已由 joint_power 覆盖
++        self.rewards.foot_clearance_reward = None   # 使用 terrain_relative_foot_clearance 代替
++        self.rewards.feet_air_time = None           # 避免与台阶攀爬的动态步频相冲突
++        self.rewards.dof_vel_l2 = None              # 避免过度压制正常摆动腿角速度
++        self.rewards.feet_slide = None              # 避免在爬高台阶摩擦抓地时产生误惩罚
++        self.rewards.foot_swing_height_l2 = None    # 避免双重足端高程目标混淆
++        self.rewards.feet_air_time_limit = None     # 避免限制大步幅跨越台阶的腾空时间
+ 
+ 
++# ==============================================================================
++# 4. 推演与验证模式配置 (Evaluation / Play Configuration)
++# ==============================================================================
+ @configclass
+ class UnitreeGo2DreamWaQRoughEnvCfg_PLAY(UnitreeGo2DreamWaQRoughEnvCfg):
+-    """Play/evaluation variant for Unitree Go2 DreamWaQ rough terrain."""
++    """Play / 评估专用配置类。
++
++    【核心特性】：
++    1. 地形固定：采用标准 4 地形切片（平地、台阶、斜坡、离散坑洼），固定随机种子，保证基准评测绝对确定可复现。
++    2. 传感器纯净：关闭所有观测噪声与随机干扰（enable_corruption = False），纯净验证策略部署上限。
++    3. 环境与相机：默认单机/百机评测，关闭随机外力与扰动推力。
++    """
+ 
+     terrain_profile: str = "fixed_four"
+     terrain_difficulty: float = 0.6
+@@ -126,10 +234,13 @@ class UnitreeGo2DreamWaQRoughEnvCfg_PLAY(UnitreeGo2DreamWaQRoughEnvCfg):
+     def __post_init__(self):
+         super().__post_init__()
+ 
++        # 评测环境数与间距
+         self.scene.num_envs = 100
+         self.scene.env_spacing = 8.0
+         self.scene.height_scanner.debug_vis = True
++        self.viewer.origin_type = "world"
+ 
++        # 加载固定的评测地形网格
+         apply_play_terrain(
+             self,
+             profile_name=self.terrain_profile,
+@@ -137,21 +248,1200 @@ class UnitreeGo2DreamWaQRoughEnvCfg_PLAY(UnitreeGo2DreamWaQRoughEnvCfg):
+             seed=self.terrain_seed,
+         )
+ 
++        # 关闭课程自适应，固定指令测试范围
+         self.curriculum.command_ranges = None
+         self.commands.base_velocity.rel_standing_envs = 0.02
+         self.commands.base_velocity.ranges.lin_vel_x = (0.6, 1.5)
+         self.commands.base_velocity.ranges.lin_vel_y = (-0.25, 0.25)
+         self.commands.base_velocity.ranges.ang_vel_z = (-0.55, 0.55)
+ 
++        # 禁用观测噪声与信号失真，评测确定性决策表现
+         self.observations.dreamwaq_policy.enable_corruption = False
+         self.observations.dreamwaq_policy_history.enable_corruption = False
+         self.observations.dreamwaq_reconstruction_target.enable_corruption = False
+         self.observations.dreamwaq_critic.enable_corruption = False
+ 
++        # 禁用持续外力推搡
+         self.events.base_external_force_torque = None
+ 
+ 
+ __all__ = [
+     "UnitreeGo2DreamWaQRoughEnvCfg",
+     "UnitreeGo2DreamWaQRoughEnvCfg_PLAY",
++    "UnitreeGo2DreamWaQFlatEnvCfg",
++    "UnitreeGo2DreamWaQFlatEnvCfg_PLAY",
++    "UnitreeGo2DreamWaQStairsEnvCfg",
++    "UnitreeGo2DreamWaQStairsEnvCfg_PLAY",
++    "UnitreeGo2DreamWaQMixedEnvCfg",
++    "UnitreeGo2DreamWaQMixedEnvCfg_PLAY",
+ ]
++
++
++# ==============================================================================
++# 5. 纯平地冷启动步态定型配置 (Flat Ground Training Configuration)
++# ==============================================================================
++@configclass
++class UnitreeGo2DreamWaQFlatEnvCfg(UnitreeGo2DreamWaQRoughEnvCfg):
++    """宇树 Go2 纯平地冷启动步态定型与 CENet 速度感知校准配置。
++
++    【纯粹学术路线定位与设计思想】：
++    1. 地形彻底清零为 plane 纯平地，排除任何台阶、坑洼对速度回归和步态学习的非线性几何扰动；
++    2. 拆除所有生硬物理死锁（禁用正交侧漂锁、髋关节锁、滞空方差锁，恢复原版 flat_orientation=-0.2 与 ang_vel_xy=-0.05）；
++    3. 允许动力学自然舒展小跑，重心自由弹性起伏，彻底消除过度刚性约束诱发的原地踏步与单侧代偿歪斜；
++    4. 仅保留极柔和对角肢体对称软正则（joint_diagonal_symmetry_l2=-0.02），防止左右肢体长短腿畸变退化；
++    5. 依靠 CENet 速度回归损失（velocity_loss_weight=3.0）提供纯净准确的速度感知，从源头消灭幽灵速度漂移。
++    """
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        # --- 1. 彻底切换为纯平地，关闭地形网格生成器与地形课程 ---
++        self.scene.terrain.terrain_type = "plane"
++        self.scene.terrain.terrain_generator = None
++        self.curriculum.terrain_levels = None
++        self.curriculum.command_ranges = None
++
++        # --- 2. 平地全向平移 (XY移动且Yaw固定) + 原地自转混合双轨指令域 ---
++        self.commands.base_velocity.heading_command = True
++        self.commands.base_velocity.heading_control_stiffness = 1.0
++        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
++        self.commands.base_velocity.rel_heading_envs = 0.50          # 50% 环境强制固定航向 0.0 (给xy走yaw不变)；50% 环境自由采样自转角速度
++        self.commands.base_velocity.ranges.lin_vel_x = (-0.6, 1.0)   # 覆盖倒退与高速冲刺
++        self.commands.base_velocity.ranges.lin_vel_y = (-0.5, 0.5)   # 覆盖全向横向滑行 (螃蟹步)
++        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)   # 覆盖高速原地自转 (快速旋转)
++        self.commands.base_velocity.rel_standing_envs = 0.02
++        self.events.reset_base.params["pose_range"]["yaw"] = (0.0, 0.0)
++
++        # --- 3. 极致悬浮平顺滑行姿态 (压制颠簸、起伏与俯仰) ---
++        self.rewards.track_lin_vel_xy_exp.weight = 1.5
++        self.rewards.track_ang_vel_z_exp.weight = 1.0
++        self.rewards.lin_vel_z_l2.weight = -3.0
++        self.rewards.ang_vel_xy_l2.weight = -0.10
++        self.rewards.flat_orientation_l2.weight = -0.40
++        self.rewards.base_height_relative_l2.weight = -2.0
++        self.rewards.base_height_relative_l2.params["target_height"] = 0.30
++        self.rewards.stand_still_joint_deviation_l1.weight = -0.20
++        self.rewards.terrain_relative_foot_clearance_l1.weight = -0.01
++
++        # --- 4. 训练端 Yaw 自抗扰与动态门控 (全向平移时航向死锁，自转时门控清零放开自由度) ---
++        self.rewards.flat_heading_error_l2.weight = -0.50
++        self.rewards.lin_vel_xy_orthogonal_l2.weight = -0.15
++
++        # --- 5. 动态门控外展与对称 (直行时纯矢状面迈步，横移与自转时自适应释放) ---
++        self.rewards.hip_pos_deviation_l1.weight = -0.10
++        self.rewards.swing_hip_abduction_l2.weight = -0.50
++        self.rewards.rear_hip_swing_symmetry_l2.weight = -0.20
++        self.rewards.joint_diagonal_symmetry_l2.weight = -0.05
++        self.rewards.feet_air_time_variance.weight = 0.0
++
++        # --- 6. 动作平滑与硬件保护 (原版标准) ---
++        self.rewards.action_rate_l2.weight = -0.01
++        self.rewards.action_smoothness_l2.weight = -0.01
++        self.rewards.dof_acc_l2.weight = -2.5e-7
++        self.rewards.joint_power_l1.weight = -2.0e-5
++
++
++
++
++@configclass
++class UnitreeGo2DreamWaQFlatEnvCfg_PLAY(UnitreeGo2DreamWaQFlatEnvCfg):
++    """纯平地评估与可视化配置。"""
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        self.scene.num_envs = 1
++        self.scene.env_spacing = 8.0
++        self.scene.height_scanner.debug_vis = False
++        self.viewer.origin_type = "world"
++
++        self.commands.base_velocity.ranges.lin_vel_x = (0.8, 0.8)
++        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
++        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
++        self.commands.base_velocity.rel_standing_envs = 0.0
++
++        self.observations.dreamwaq_policy.enable_corruption = False
++        self.observations.dreamwaq_policy_history.enable_corruption = False
++        self.observations.dreamwaq_reconstruction_target.enable_corruption = False
++        self.observations.dreamwaq_critic.enable_corruption = False
++        self.events.base_external_force_torque = None
++
++
++# ==============================================================================
++# 6. 第二阶段：单向直线阶梯长廊自适应课程攻坚专项微调 (Straight Ascending Stairs Corridor)
++# ==============================================================================
++@configclass
++class UnitreeGo2DreamWaQStairsEnvCfg(UnitreeGo2DreamWaQRoughEnvCfg):
++    """宇树 Go2 两阶段微调第二步：单向直线阶梯长廊自适应课程攻坚专项微调。
++
++    【核心特性与动力学设计】：
++    1. 彻底淘汰环形金字塔，定制 12m×4m 纯单向正向爬升阶梯长廊（起跑平地 2.5m + 23 级正向阶梯 7m + 登顶平地 2.5m）；
++    2. 几何上物理杜绝下楼梯与下坠失重边缘，彻底粉碎“摔跤翻滚骗数据”的投机回路；
++    3. 动态自适应课程学习 (Curriculum)：从 3cm 微阶平滑起步，随存活率与速度跟踪动态攀升至 15cm 极限阶高；
++    4. 严格法向对齐 (Yaw in [-0.05, 0.05]) + 纯前向指令硬锁 (vx in [0.45, 0.75], vy=0, wz=0)；
++    5. 正交侧漂强镇压 (-0.15) + 髋关节 0° 锁 (-0.15) + 对角对称软正则 (-0.02) + 抬腿净空 (0.09m, -0.03)。
++    """
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        # --- 1. 定制单向单道直线阶梯长廊 (12.0m x 4.0m) ---
++        self.scene.terrain.terrain_generator.size = (12.0, 4.0)
++        self.scene.terrain.terrain_generator.border_width = 5.0
++        self.scene.terrain.terrain_generator.curriculum = True
++        self.scene.terrain.max_init_terrain_level = 0  # Stage 2 起步：从 Level 0 (3cm 微阶) 展开，随自适应课程平滑晋级至 15cm
++        self.scene.terrain.terrain_generator.sub_terrains = {
++            "straight_stairs": MeshStraightAscendingStairsTerrainCfg(
++                proportion=1.0,
++                step_height_range=(0.03, 0.15),
++                step_width=0.3,
++                platform_start=2.5,
++                platform_end=2.5,
++            )
++        }
++
++        # --- 2. 刷新重生严格正对台阶法向 (Orthogonal Spawn Lock) ---
++        # 初始误差严格限制在 ±2.8° 内，出生在平地起跑区
++        self.events.reset_base.params["pose_range"]["yaw"] = (-0.05, 0.05)
++        self.events.reset_base.params["pose_range"]["x"] = (-0.1, 0.1)
++        self.events.reset_base.params["pose_range"]["y"] = (-0.1, 0.1)
++
++        # --- 3. WaxberryS 正向爬阶指令：正向攻坚长廊，航向锁紧 ---
++        self.commands.base_velocity.heading_command = True
++        self.commands.base_velocity.heading_control_stiffness = 1.0
++        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
++        self.commands.base_velocity.rel_heading_envs = 1.0
++        self.commands.base_velocity.ranges.lin_vel_x = (0.45, 0.75)
++        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
++        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
++        self.commands.base_velocity.rel_standing_envs = 0.0
++
++        # --- 4. 彻底解耦死锁：纯物理翻阶距离自适应课程 (Waxberry 正统规范) ---
++        self.curriculum.terrain_levels.func = mdp.terrain_levels_vel
++        self.curriculum.terrain_levels.params = {}
++        self.curriculum.command_ranges = None
++
++        # --- 5. 动力学奖励微调 (拆除姿态锁红线 W4，强化跨阶净空) ---
++        self.rewards.track_lin_vel_xy_exp.weight = 1.0
++        self.rewards.track_ang_vel_z_exp.weight = 0.50
++
++        # 爬楼梯必然有向上正向 vz 与自然俯仰，放宽垂直速度阻尼并彻底清零水平姿态锁 (红线 W4)
++        self.rewards.lin_vel_z_l2.weight = -0.10
++        self.rewards.ang_vel_xy_l2.weight = -0.05
++        self.rewards.flat_orientation_l2.weight = 0.0
++        self.rewards.base_height_relative_l2.weight = -0.20
++
++        # 核心防漂移与对称性继承 (阶段一成果注入加码)
++        self.rewards.lin_vel_xy_orthogonal_l2.weight = -0.15
++        self.rewards.hip_pos_deviation_l1.weight = -0.05
++        self.rewards.joint_diagonal_symmetry_l2.weight = -0.02
++
++        # 摆动相专属髋关节外展画弧惩罚与四肢全对称镜像约束 (带全向与自转动态门控)
++        self.rewards.swing_hip_abduction_l2.weight = -0.50
++        self.rewards.rear_hip_swing_symmetry_l2.weight = -0.15
++
++        # 核心防撞阶：足端清除度激励 (目标净空提升至 0.16m 覆盖 15cm 阶高，权重加强至 -0.15)
++        self.rewards.terrain_relative_foot_clearance_l1.weight = -0.15
++        self.rewards.terrain_relative_foot_clearance_l1.params["target_clearance"] = 0.16
++
++        # 软限位与非预期碰撞防护 (小腿杆磕阶碰撞适度约束 -0.20，引导抬腿同时防畏缩)
++        self.rewards.dof_pos_limits.weight = -1.0
++        self.rewards.undesired_contacts.weight = -0.20
++        self.rewards.undesired_contacts.params["sensor_cfg"].body_names = [
++            ".*thigh",
++            ".*calf",
++        ]
++
++        # --- 6. 台阶截断优化 (彻底移除射线误判的 low_base_height) ---
++        self.terminations.low_base_height = None
++        self.terminations.base_contact.params["threshold"] = 25.0
++
++
++@configclass
++class UnitreeGo2DreamWaQStairsEnvCfg_PLAY(UnitreeGo2DreamWaQStairsEnvCfg):
++    """单向直线阶梯长廊评估与可视化配置。"""
++
++    terrain_difficulty: float = 1.0  # 1.0 对应 15cm 极限阶高验收
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        self.scene.num_envs = 4
++        self.scene.env_spacing = 6.0
++        self.scene.height_scanner.debug_vis = True
++        self.viewer.origin_type = "world"
++
++        # PLAY 评估直接固定在指定难度 (例如 1.0 为 15cm 阶高)
++        self.scene.terrain.terrain_generator.size = (12.0, 4.0)
++        self.scene.terrain.terrain_generator.num_rows = 1
++        self.scene.terrain.terrain_generator.num_cols = 4
++        self.scene.terrain.terrain_generator.curriculum = True
++        self.scene.terrain.terrain_generator.difficulty_range = (self.terrain_difficulty, self.terrain_difficulty)
++        self.scene.terrain.terrain_generator.sub_terrains = {
++            "straight_stairs": MeshStraightAscendingStairsTerrainCfg(
++                proportion=1.0,
++                step_height_range=(0.03, 0.15),
++                step_width=0.3,
++                platform_start=2.5,
++                platform_end=2.5,
++            )
++        }
++
++        self.curriculum.command_ranges = None
++        self.curriculum.terrain_levels = None
++        self.commands.base_velocity.heading_command = True
++        self.commands.base_velocity.heading_control_stiffness = 1.0
++        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
++        self.commands.base_velocity.rel_heading_envs = 1.0
++        self.commands.base_velocity.rel_standing_envs = 0.0
++        self.commands.base_velocity.ranges.lin_vel_x = (0.6, 0.6)
++        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
++        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
++
++        self.observations.dreamwaq_policy.enable_corruption = False
++        self.observations.dreamwaq_policy_history.enable_corruption = False
++        self.observations.dreamwaq_reconstruction_target.enable_corruption = False
++        self.observations.dreamwaq_critic.enable_corruption = False
++        self.events.base_external_force_torque = None
++
++
++# ==============================================================================
++# 7. 第三阶段：平地+楼梯混合长廊多任务融合微调 (Stage 3 Mixed Corridor Fusion Fine-Tuning)
++# ==============================================================================
++@configclass
++class UnitreeGo2DreamWaQMixedEnvCfg(UnitreeGo2DreamWaQStairsEnvCfg):
++    """宇树 Go2 两阶段断层弥合微调：40% 平地长廊 + 60% 单向阶梯长廊联合多任务攻坚。
++
++    【核心特性与动力学设计】：
++    1. 混合长廊地形：40% 纯平地长廊 (MeshPlaneTerrainCfg) + 60% 单向阶梯长廊 (MeshStraightAscendingStairsTerrainCfg)；
++    2. CENet 隐空间去混淆：迫使变分自编码器 16 维潜变量 z 同时经历平地光滑流形与台阶接触阻抗，消灭潜变量混淆与平地高频打颤；
++    3. 俯仰自适应单边净空 (Pitch-Adaptive Clearance)：
++       - 平地 (|pitch| < 3°): 净空门限自动回缩至 0.04m，步态轻盈紧凑，根治高抬腿猛跺地诱发的地面反力冲击；
++       - 台阶 (pitch > 6°): 自适应放大至 0.16m，强力引导深屈膝高提膝翻越 15cm 大台阶；
++    4. 姿态精准解耦 (roll_orientation_l2 = -0.25)：锁死机身左右横滚侧倾，彻底释放 Pitch 自由度顺应 15°~25° 楼梯坡度；
++    5. 平衡垂直速度阻尼 (lin_vel_z_l2 = -0.30)：平地抑制起伏颠簸，爬楼梯保障向上攀爬动能；
++    6. 继承对角 Trot 对称软正则 (-0.02) 与摆动相髋关节外展画弧惩罚 (-0.50)，步态优美端正。
++    """
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        # --- 1. 定制混合长廊地形网格 (40% 平地 + 60% 阶梯) ---
++        self.scene.terrain.terrain_generator.size = (12.0, 4.0)
++        self.scene.terrain.terrain_generator.border_width = 5.0
++        self.scene.terrain.terrain_generator.curriculum = True
++        self.scene.terrain.max_init_terrain_level = 0  # 随自适应课程平滑晋级
++        self.scene.terrain.terrain_generator.sub_terrains = {
++            "flat_corridor": MeshPlaneTerrainCfg(proportion=0.40),
++            "straight_stairs": MeshStraightAscendingStairsTerrainCfg(
++                proportion=0.60,
++                step_height_range=(0.03, 0.15),
++                step_width=0.3,
++                platform_start=2.5,
++                platform_end=2.5,
++            ),
++        }
++
++        # --- 2. 刷新出生正对长廊法向 ---
++        self.events.reset_base.params["pose_range"]["yaw"] = (-0.05, 0.05)
++        self.events.reset_base.params["pose_range"]["x"] = (-0.1, 0.1)
++        self.events.reset_base.params["pose_range"]["y"] = (-0.1, 0.1)
++
++        # --- 3. 全域指令域覆盖：平地巡航与爬阶冲顶一体化 ---
++        self.commands.base_velocity.heading_command = True
++        self.commands.base_velocity.heading_control_stiffness = 1.0
++        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
++        self.commands.base_velocity.rel_heading_envs = 1.0
++        self.commands.base_velocity.ranges.lin_vel_x = (0.45, 0.85)
++        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
++        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
++        self.commands.base_velocity.rel_standing_envs = 0.0
++
++        # --- 4. 动力学奖励重构 (平地悬浮滑行 + 楼梯霸气翻越) ---
++        self.rewards.track_lin_vel_xy_exp.weight = 1.2
++        self.rewards.track_ang_vel_z_exp.weight = 0.50
++
++        # 姿态精准解耦：横滚刚性锁定，俯仰彻底释放
++        self.rewards.flat_orientation_l2.weight = 0.0
++        self.rewards.roll_orientation_l2.weight = -0.25
++
++        # 均衡阻尼与恒高
++        self.rewards.lin_vel_z_l2.weight = -0.30
++        self.rewards.ang_vel_xy_l2.weight = -0.05
++        self.rewards.base_height_relative_l2.weight = -0.25
++        self.rewards.base_height_relative_l2.params["target_height"] = 0.30
++
++        # 核心防侧漂与对称性 (继承黄金成果)
++        self.rewards.lin_vel_xy_orthogonal_l2.weight = -0.15
++        self.rewards.hip_pos_deviation_l1.weight = -0.05
++        self.rewards.joint_diagonal_symmetry_l2.weight = -0.02
++        self.rewards.swing_hip_abduction_l2.weight = -0.50
++        self.rewards.rear_hip_swing_symmetry_l2.weight = -0.15
++
++        # 核心：俯仰自适应单边足端净空
++        self.rewards.terrain_relative_foot_clearance_l1.func = mdp.pitch_adaptive_foot_clearance_l1
++        self.rewards.terrain_relative_foot_clearance_l1.weight = -0.15
++        self.rewards.terrain_relative_foot_clearance_l1.params["flat_target_clearance"] = 0.04
++        self.rewards.terrain_relative_foot_clearance_l1.params["stairs_target_clearance"] = 0.16
++
++        # 硬件碰撞与截断保护
++        self.rewards.dof_pos_limits.weight = -1.0
++        self.rewards.undesired_contacts.weight = -0.20
++        self.rewards.undesired_contacts.params["sensor_cfg"].body_names = [
++            ".*thigh",
++            ".*calf",
++        ]
++
++        self.terminations.low_base_height = None
++        self.terminations.base_contact.params["threshold"] = 25.0
++
++
++@configclass
++class UnitreeGo2DreamWaQMixedEnvCfg_PLAY(UnitreeGo2DreamWaQMixedEnvCfg):
++    """平地与台阶混合长廊评估与可视化配置。"""
++
++    terrain_difficulty: float = 1.0
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        self.scene.num_envs = 4
++        self.scene.env_spacing = 6.0
++        self.scene.height_scanner.debug_vis = True
++        self.viewer.origin_type = "world"
++
++        self.scene.terrain.terrain_generator.size = (12.0, 4.0)
++        self.scene.terrain.terrain_generator.num_rows = 1
++        self.scene.terrain.terrain_generator.num_cols = 4
++        self.scene.terrain.terrain_generator.curriculum = True
++        self.scene.terrain.terrain_generator.difficulty_range = (self.terrain_difficulty, self.terrain_difficulty)
++        self.scene.terrain.terrain_generator.sub_terrains = {
++            "flat_corridor": MeshPlaneTerrainCfg(proportion=0.40),
++            "straight_stairs": MeshStraightAscendingStairsTerrainCfg(
++                proportion=0.60,
++                step_height_range=(0.03, 0.15),
++                step_width=0.3,
++                platform_start=2.5,
++                platform_end=2.5,
++            ),
++        }
++
++        self.curriculum.command_ranges = None
++        self.curriculum.terrain_levels = None
++        self.commands.base_velocity.heading_command = True
++        self.commands.base_velocity.heading_control_stiffness = 1.0
++        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
++        self.commands.base_velocity.rel_heading_envs = 1.0
++        self.commands.base_velocity.rel_standing_envs = 0.0
++        self.commands.base_velocity.ranges.lin_vel_x = (0.6, 0.6)
++        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
++        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
++
++        self.observations.dreamwaq_policy.enable_corruption = False
++        self.observations.dreamwaq_policy_history.enable_corruption = False
++        self.observations.dreamwaq_reconstruction_target.enable_corruption = False
++        self.observations.dreamwaq_critic.enable_corruption = False
++        self.events.base_external_force_torque = None
++
++
++@configclass
++class UnitreeGo2DreamWaQSoftLandingEnvCfg(UnitreeGo2DreamWaQMixedEnvCfg):
++    """Stage 4: 注入足端软着陆阻尼与接触力缓冲微调配置。
++
++    目标：在保持 100% 翻越 5 级台阶的基础上，将平地机身垂直抖动彻底压进 < 10.0mm 黄金线以内。
++
++    核心调优项：
++    1. 注入足端垂直撞击软着陆阻尼：feet_contact_velocity_z (weight = -0.06)
++    2. 注入足端超额接地力缓冲：feet_contact_force_excess (weight = -0.0001, max_force = 85.0)
++    3. 注入动作二阶差分平滑：action_smoothness_2nd (weight = -0.005)
++    4. 强化机身垂直速度阻尼：lin_vel_z_l2 从 -0.30 提升至 -0.75 (平地强力压平颠簸)
++    5. 加固横滚姿态刚性：roll_orientation_l2 从 -0.25 加固至 -0.40 (压制侧倾摆幅)
++    6. 收紧平地目标净空：flat_target_clearance 从 0.04m 收紧至 0.025m (台阶依然维持 0.16m 暴力提膝)
++    """
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        # --- 核心强化项 1: 足端软着陆阻尼 (消除平地跺地冲击与力矩尖峰) ---
++        self.rewards.feet_contact_velocity_z.weight = -0.06
++        self.rewards.feet_contact_force_excess.weight = -0.0001
++        self.rewards.action_smoothness_2nd.weight = -0.005
++
++        # --- 核心强化项 2: 机身垂直速度阻尼强化 (-0.30 -> -0.75，压平起伏) ---
++        self.rewards.lin_vel_z_l2.weight = -0.75
++
++        # --- 核心强化项 3: 横滚姿态刚性加固 (-0.25 -> -0.40) ---
++        self.rewards.roll_orientation_l2.weight = -0.40
++
++        # --- 核心强化项 4: 平地目标净空收紧 (0.04m -> 0.025m，台阶依然维持 0.16m) ---
++        self.rewards.terrain_relative_foot_clearance_l1.params["flat_target_clearance"] = 0.025
++        self.rewards.terrain_relative_foot_clearance_l1.params["stairs_target_clearance"] = 0.16
++
++
++@configclass
++class UnitreeGo2DreamWaQSoftLandingEnvCfg_PLAY(UnitreeGo2DreamWaQSoftLandingEnvCfg):
++    """平地与台阶软着陆评估与可视化配置。"""
++
++    terrain_difficulty: float = 1.0
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        self.scene.num_envs = 4
++        self.scene.env_spacing = 6.0
++        self.scene.height_scanner.debug_vis = True
++        self.viewer.origin_type = "world"
++
++        self.scene.terrain.terrain_generator.size = (12.0, 4.0)
++        self.scene.terrain.terrain_generator.num_rows = 1
++        self.scene.terrain.terrain_generator.num_cols = 4
++        self.scene.terrain.terrain_generator.curriculum = True
++        self.scene.terrain.terrain_generator.difficulty_range = (self.terrain_difficulty, self.terrain_difficulty)
++        self.scene.terrain.terrain_generator.sub_terrains = {
++            "flat_corridor": MeshPlaneTerrainCfg(proportion=0.40),
++            "straight_stairs": MeshStraightAscendingStairsTerrainCfg(
++                proportion=0.60,
++                step_height_range=(0.03, 0.15),
++                step_width=0.3,
++                platform_start=2.5,
++                platform_end=2.5,
++            ),
++        }
++
++        self.curriculum.command_ranges = None
++        self.curriculum.terrain_levels = None
++        self.commands.base_velocity.heading_command = True
++        self.commands.base_velocity.heading_control_stiffness = 1.0
++        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
++        self.commands.base_velocity.rel_heading_envs = 1.0
++        self.commands.base_velocity.rel_standing_envs = 0.0
++        self.commands.base_velocity.ranges.lin_vel_x = (0.6, 0.6)
++        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
++        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
++
++        self.observations.dreamwaq_policy.enable_corruption = False
++        self.observations.dreamwaq_policy_history.enable_corruption = False
++        self.observations.dreamwaq_reconstruction_target.enable_corruption = False
++        self.observations.dreamwaq_critic.enable_corruption = False
++        self.events.base_external_force_torque = None
++
++
++@configclass
++class UnitreeGo2DreamWaQDecoupledEnvCfg(UnitreeGo2DreamWaQSoftLandingEnvCfg):
++    """Stage 5: 解耦微调配置 (Decoupled Flat Pitch Lock & Dual-Bounded Foot Clearance).
++
++    目标：彻底根除平地机身俯仰跷跷板摇晃（Pitch Oscillation）与足端高抬腿跺地冲击（Stamping Impact），
++    实现平地如磁悬浮般平顺巡航，同时遇阶自适应释放俯仰与提膝，保持 100% 翻越 5 级台阶。
++
++    核心解耦与加固项：
++    1. 注入解耦平地俯仰刚性锁：terrain_adaptive_pitch_orientation_l2 (weight = -0.40)
++       - 平地巡航时严格锁死 pitch 晃动 (压回 <= 1.5°，消除机头点头颠簸)；
++       - 台阶大仰角时 gate 平滑衰减至 0，彻底释放爬阶自由度，严格遵循红线 W4。
++    2. 注入双向限幅足端净空惩罚：dual_bounded_pitch_adaptive_foot_clearance_l1 (weight = -0.20)
++       - 平地设置严苛上限 flat_max_clearance = 0.028m，超额抬腿处以 3.0x 重罚，死死按压在 10~25mm 悬浮小跑；
++       - 台阶上超额惩罚彻底清零，允许并激励深屈膝提膝至 0.16m，无损翻越 15cm 台阶。
++    3. 垂向蹦跳严厉阻尼加倍：lin_vel_z_l2 从 -0.75 加码至 -1.50 (深度压平机身起伏)。
++    4. 机身角速度与高度刚性加固：
++       - ang_vel_xy_l2 从 -0.05 加固至 -0.10 (抑制高速晃荡角速度)；
++       - base_height_relative_l2 从 -0.25 恢复至 -1.00 (target = 0.30m，锁死恒高)。
++    5. 足端触地软着陆与动作平滑深度强化：
++       - feet_contact_velocity_z 从 -0.06 提升至 -0.08；
++       - action_smoothness_2nd 从 -0.005 提升至 -0.008。
++    """
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        # --- 核心解耦项 1: 平地俯仰刚性锁 (-0.40，平地消除跷跷板摇晃，遇阶自动脱锁) ---
++        self.rewards.terrain_adaptive_pitch_orientation_l2.weight = -0.40
++        self.rewards.roll_orientation_l2.weight = -0.40
++
++        # --- 核心解耦项 2: 双向限幅足端净空 (平地超额严惩，台阶高提膝无损) ---
++        self.rewards.terrain_relative_foot_clearance_l1.func = mdp.dual_bounded_pitch_adaptive_foot_clearance_l1
++        self.rewards.terrain_relative_foot_clearance_l1.weight = -0.20
++        self.rewards.terrain_relative_foot_clearance_l1.params["flat_target_clearance"] = 0.022
++        self.rewards.terrain_relative_foot_clearance_l1.params["flat_max_clearance"] = 0.028
++        self.rewards.terrain_relative_foot_clearance_l1.params["stairs_target_clearance"] = 0.16
++        self.rewards.terrain_relative_foot_clearance_l1.params["excess_penalty_scale"] = 3.0
++
++        # --- 核心强化项 3: 垂向阻尼与恒高刚性锁 (彻底消灭颠簸沉浮) ---
++        self.rewards.lin_vel_z_l2.weight = -1.50
++        self.rewards.ang_vel_xy_l2.weight = -0.10
++        self.rewards.base_height_relative_l2.weight = -1.00
++        self.rewards.base_height_relative_l2.params["target_height"] = 0.30
++
++        # --- 核心强化项 4: 触地缓冲与动作二阶平滑 ---
++        self.rewards.feet_contact_velocity_z.weight = -0.08
++        self.rewards.action_smoothness_2nd.weight = -0.008
++
++
++@configclass
++class UnitreeGo2DreamWaQDecoupledEnvCfg_PLAY(UnitreeGo2DreamWaQDecoupledEnvCfg):
++    """平地与台阶解耦微调评估与可视化配置。"""
++
++    terrain_difficulty: float = 1.0
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        self.scene.num_envs = 4
++        self.scene.env_spacing = 6.0
++        self.scene.height_scanner.debug_vis = True
++        self.viewer.origin_type = "world"
++
++        self.scene.terrain.terrain_generator.size = (12.0, 4.0)
++        self.scene.terrain.terrain_generator.num_rows = 1
++        self.scene.terrain.terrain_generator.num_cols = 4
++        self.scene.terrain.terrain_generator.curriculum = True
++        self.scene.terrain.terrain_generator.difficulty_range = (self.terrain_difficulty, self.terrain_difficulty)
++        self.scene.terrain.terrain_generator.sub_terrains = {
++            "flat_corridor": MeshPlaneTerrainCfg(proportion=0.40),
++            "straight_stairs": MeshStraightAscendingStairsTerrainCfg(
++                proportion=0.60,
++                step_height_range=(0.03, 0.15),
++                step_width=0.3,
++                platform_start=2.5,
++                platform_end=2.5,
++            ),
++        }
++
++        self.curriculum.command_ranges = None
++        self.curriculum.terrain_levels = None
++        self.commands.base_velocity.heading_command = True
++        self.commands.base_velocity.heading_control_stiffness = 1.0
++        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
++        self.commands.base_velocity.rel_heading_envs = 1.0
++        self.commands.base_velocity.rel_standing_envs = 0.0
++        self.commands.base_velocity.ranges.lin_vel_x = (0.6, 0.6)
++        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
++        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
++
++        self.observations.dreamwaq_policy.enable_corruption = False
++        self.observations.dreamwaq_policy_history.enable_corruption = False
++        self.observations.dreamwaq_reconstruction_target.enable_corruption = False
++        self.observations.dreamwaq_critic.enable_corruption = False
++        self.events.base_external_force_torque = None
++
++
++@configclass
++class UnitreeGo2DreamWaQSurgeryEnvCfg(UnitreeGo2DreamWaQDecoupledEnvCfg):
++    """Stage 6: 全域等变镜像对称与前肢双向对中硬手术配置 (Unified Symmetry Surgery & Equivariance Lock).
++
++    目标：彻底矫正 Stage 5 模型在台阶训练中遗留的左前腿内偏（FL Inward Adduction Bias -15.0° / 6.3cm），
++    构建同时具备【4598 平地绝对镜像对称滑行】与【6493 强悍 100% 越障】的终极大一统模型。
++
++    核心手术项：
++    1. 注入全域等变镜像对称硬锁：bilateral_hip_symmetry_equivariance_l2 (weight = -0.50)
++       - 彻底剔除 min=0.0 单边截断后门，无论是外甩还是内扣，只要左右不对称一律严惩！
++    2. 注入前腿髋关节双向中立零位锁：front_hip_neutral_pos_l2 (weight = -0.80)
++       - 强制将左前髋 FL 偏离角从 -9.3°（内偏 15°）强行拉直回 0° ~ 5.7° 黄金支撑角度；
++    3. 激活四肢功率均衡方差惩罚：power_distribution_variance_l2 (weight = -1.0e-5)
++       - 遵循 agent.md 与 DreamWaQ.md 规范，瓦解单肢内收借力与非对称负荷偷懒；
++    4. 保留 Stage 5 全部成果：
++       - 自适应平地俯仰刚性锁 (-0.40) + 双向限幅足端净空 (平地 <=28mm 严惩，台阶 0.16m 释放)；
++       - 足端软着陆阻尼与动作二阶平滑；
++       - 40% 平地长廊 + 60% 直线阶梯自适应混合地形。
++    """
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        # --- 核心手术项 1: 双向全域等变镜像对称锁 (-0.50，左右必须镜像一致) ---
++        self.rewards.bilateral_hip_symmetry_equivariance_l2.weight = -0.50
++
++        # --- 核心手术项 2: 前腿髋关节中立零位硬拉直 (-0.80，将左前腿拉直回对中状态) ---
++        self.rewards.front_hip_neutral_pos_l2.weight = -0.80
++
++        # --- 核心手术项 3: 功耗对称方差均衡 (-1.0e-4，强制四腿负荷绝对均摊，消灭单侧主导) ---
++        self.rewards.power_distribution_variance_l2.weight = -1.0e-4
++
++        # --- 核心手术项 4: 几何铁笼严惩总髋位姿偏离 (-0.50，强制四腿髋角绝对对中) ---
++        self.rewards.hip_pos_deviation_l1.weight = -0.50
++
++
++@configclass
++class UnitreeGo2DreamWaQSurgeryEnvCfg_PLAY(UnitreeGo2DreamWaQSurgeryEnvCfg):
++    """Stage 6 评估与可视化配置。"""
++
++    terrain_difficulty: float = 1.0
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        self.scene.num_envs = 4
++        self.scene.env_spacing = 6.0
++        self.scene.height_scanner.debug_vis = True
++        self.viewer.origin_type = "world"
++
++        self.scene.terrain.terrain_generator.size = (12.0, 4.0)
++        self.scene.terrain.terrain_generator.num_rows = 1
++        self.scene.terrain.terrain_generator.num_cols = 4
++        self.scene.terrain.terrain_generator.curriculum = True
++        self.scene.terrain.terrain_generator.difficulty_range = (self.terrain_difficulty, self.terrain_difficulty)
++        self.scene.terrain.terrain_generator.sub_terrains = {
++            "flat_corridor": MeshPlaneTerrainCfg(proportion=0.40),
++            "straight_stairs": MeshStraightAscendingStairsTerrainCfg(
++                proportion=0.60,
++                step_height_range=(0.03, 0.15),
++                step_width=0.3,
++                platform_start=2.5,
++                platform_end=2.5,
++            ),
++        }
++
++        self.curriculum.command_ranges = None
++        self.curriculum.terrain_levels = None
++        self.commands.base_velocity.heading_command = True
++        self.commands.base_velocity.heading_control_stiffness = 1.0
++        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
++        self.commands.base_velocity.rel_heading_envs = 1.0
++        self.commands.base_velocity.rel_standing_envs = 0.0
++        self.commands.base_velocity.ranges.lin_vel_x = (0.6, 0.6)
++        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
++        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
++
++        self.observations.dreamwaq_policy.enable_corruption = False
++        self.observations.dreamwaq_policy_history.enable_corruption = False
++        self.observations.dreamwaq_reconstruction_target.enable_corruption = False
++        self.observations.dreamwaq_critic.enable_corruption = False
++        self.events.base_external_force_torque = None
++
++
++@configclass
++class UnitreeGo2DreamWaQExtremeStairs15cmEnvCfg(UnitreeGo2DreamWaQSurgeryEnvCfg):
++    """Stage 8: 15cm 极限高台阶专项攻坚与自适应提膝跨障配置 (Extreme 15cm Stairs Knee-Lift Fine-tuning).
++
++    目标：彻底克服 15cm 极限阶高（0.75m 攀升）起步切入撞阶摔倒与小腿剐蹭痛点，
++    实现大开大合的高抬腿悬空跨越，兼具平地磁悬浮滑行与 15cm~18cm 极限台阶自适应翻越。
++
++    核心攻坚项：
++    1. 阶梯课程锁定在 10cm ~ 16cm 极限高度区间：
++       - straight_stairs: step_height_range=(0.10, 0.16)
++       - 强迫所有智能体专门在极限高阶中进行步态与动力学探索；
++    2. 自适应越障足端净空全面拔高：
++       - stairs_target_clearance 从 0.16m 调整为 0.15m (悬空整整 15cm)；
++       - 平地依然维持 flat_target_clearance = 0.022m, flat_max_clearance = 0.028m，严惩平地跺地；
++    3. 小腿/大腿磕碰重罚加码：
++       - undesired_contacts: weight 从 -0.20 加码至 -0.40 (严惩胫骨与台阶磕碰，逼迫提膝)；
++    4. 继承 Stage 7 的所有等变损失与动力学铁笼：
++       - 左右等变镜像硬锁、髋关节中立零位锁、四腿功率均衡方差锁全量生效！
++    """
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        # --- 1. 极限阶高长廊设定 (10cm ~ 16cm) ---
++        self.scene.terrain.terrain_generator.sub_terrains["straight_stairs"] = MeshStraightAscendingStairsTerrainCfg(
++            proportion=0.60,
++            step_height_range=(0.10, 0.16),
++            step_width=0.30,
++            platform_start=2.5,
++            platform_end=2.5,
++        )
++
++        # --- 2. 越障足端提膝拔高与平地磁悬浮严格解耦 ---
++        self.rewards.terrain_relative_foot_clearance_l1.func = mdp.dual_bounded_pitch_adaptive_foot_clearance_l1
++        self.rewards.terrain_relative_foot_clearance_l1.weight = -0.25
++        self.rewards.terrain_relative_foot_clearance_l1.params["flat_target_clearance"] = 0.022
++        self.rewards.terrain_relative_foot_clearance_l1.params["flat_max_clearance"] = 0.028
++        self.rewards.terrain_relative_foot_clearance_l1.params["stairs_target_clearance"] = 0.15
++        self.rewards.terrain_relative_foot_clearance_l1.params["excess_penalty_scale"] = 3.0
++
++        # --- 3. 严惩磕阶与小腿刮蹭 (加码 2 倍) ---
++        self.rewards.undesired_contacts.weight = -0.40
++
++
++@configclass
++class UnitreeGo2DreamWaQExtremeStairs15cmEnvCfg_PLAY(UnitreeGo2DreamWaQExtremeStairs15cmEnvCfg):
++    """Stage 8 评估与可视化配置。"""
++
++    terrain_difficulty: float = 1.0
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        self.scene.num_envs = 4
++        self.scene.env_spacing = 6.0
++        self.scene.height_scanner.debug_vis = True
++        self.viewer.origin_type = "world"
++
++        self.scene.terrain.terrain_generator.size = (12.0, 4.0)
++        self.scene.terrain.terrain_generator.num_rows = 1
++        self.scene.terrain.terrain_generator.num_cols = 4
++        self.scene.terrain.terrain_generator.curriculum = True
++        self.scene.terrain.terrain_generator.difficulty_range = (self.terrain_difficulty, self.terrain_difficulty)
++        self.scene.terrain.terrain_generator.sub_terrains = {
++            "flat_corridor": MeshPlaneTerrainCfg(proportion=0.40),
++            "straight_stairs": MeshStraightAscendingStairsTerrainCfg(
++                proportion=0.60,
++                step_height_range=(0.10, 0.16),
++                step_width=0.30,
++                platform_start=2.5,
++                platform_end=2.5,
++            ),
++        }
++
++        self.curriculum.command_ranges = None
++        self.curriculum.terrain_levels = None
++        self.commands.base_velocity.heading_command = True
++        self.commands.base_velocity.heading_control_stiffness = 1.0
++        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
++        self.commands.base_velocity.rel_heading_envs = 1.0
++        self.commands.base_velocity.rel_standing_envs = 0.0
++        self.commands.base_velocity.ranges.lin_vel_x = (0.6, 0.6)
++        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
++        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
++
++        self.observations.dreamwaq_policy.enable_corruption = False
++        self.observations.dreamwaq_policy_history.enable_corruption = False
++        self.observations.dreamwaq_reconstruction_target.enable_corruption = False
++        self.observations.dreamwaq_critic.enable_corruption = False
++        self.events.base_external_force_torque = None
++
++
++@configclass
++class UnitreeGo2DreamWaQSmoothStairsStage9EnvCfg(UnitreeGo2DreamWaQExtremeStairs15cmEnvCfg):
++    """Stage 9: 终极平滑与激光级直行大一统手术配置 (Smooth Stairs & Straight Drift Erasure Fine-tuning).
++
++    核心改进与物理机理：
++    1. 彻底消灭台阶卡壳/卡顿（消灭恐慌性避险回缩假死 Retraction Reflex）：
++       - undesired_contacts: weight 从 -0.40 剧降至 -0.02 (解除对肢体擦阶的粗暴二值封杀)；
++       - soft_contact_velocity_damping: weight = -0.05 (连续接触速度阻尼，允许低速顺滑贴附阶梯滑行，仅重惩高速粗暴硬撞)；
++    2. 彻底消灭直行向左偏摆问题（锁死激光级直线）：
++       - straight_ang_vel_z: weight = -0.25 (在直行指令下严惩机身任何偏航角速度 |w_z|^2)；
++       - flat_heading_error_l2: weight = -0.40 (平地绝对航向死锁，强行纠正偏航)；
++       - rear_hip_neutral_pos: weight = -0.50 (后腿髋关节双向中立零位锁，消灭 RL/RR 差异偏推)；
++    3. 全量继承 Stage 7/8 黄金动力学铁笼：
++       - front_hip_neutral_pos_l2: weight = -0.80 (前腿髋关节中立零位锁)；
++       - bilateral_hip_symmetry_equivariance_l2: weight = -0.50 (左右镜像等变硬锁)；
++       - power_distribution_variance_l2: weight = -1.0e-4 (四肢功耗方差均衡)；
++       - hip_pos_deviation_l1: weight = -0.50 (总髋位姿偏离惩罚)；
++       - dual_bounded_pitch_adaptive_foot_clearance_l1: weight = -0.25 (15cm 极限高台阶提膝 + 平地 22mm 磁悬浮滑行)。
++    """
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        # --- 1. 消灭台阶卡顿：碰撞惩罚柔化为连续速度阻尼 ---
++        self.rewards.undesired_contacts.weight = -0.02
++        self.rewards.soft_contact_velocity_damping.weight = -0.05
++
++        # --- 2. 锁死激光级直线：偏航刚性阻尼 + 绝对航向死锁 + 后腿髋零位锁 ---
++        self.rewards.straight_ang_vel_z.weight = -0.25
++        self.rewards.flat_heading_error_l2.weight = -0.40
++        self.rewards.rear_hip_neutral_pos.weight = -0.50
++
++        # --- 3. 强化镜像等变与功耗平衡铁笼 ---
++        self.rewards.front_hip_neutral_pos_l2.weight = -0.80
++        self.rewards.bilateral_hip_symmetry_equivariance_l2.weight = -0.50
++        self.rewards.power_distribution_variance_l2.weight = -1.0e-4
++        self.rewards.hip_pos_deviation_l1.weight = -0.50
++
++
++@configclass
++class UnitreeGo2DreamWaQSmoothStairsStage9EnvCfg_PLAY(UnitreeGo2DreamWaQSmoothStairsStage9EnvCfg):
++    """Stage 9 评估与可视化配置。"""
++
++    terrain_difficulty: float = 1.0
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        self.scene.num_envs = 4
++        self.scene.env_spacing = 6.0
++        self.scene.height_scanner.debug_vis = True
++        self.viewer.origin_type = "world"
++
++        self.scene.terrain.terrain_generator.size = (12.0, 4.0)
++        self.scene.terrain.terrain_generator.num_rows = 1
++        self.scene.terrain.terrain_generator.num_cols = 4
++        self.scene.terrain.terrain_generator.curriculum = True
++        self.scene.terrain.terrain_generator.difficulty_range = (self.terrain_difficulty, self.terrain_difficulty)
++        self.scene.terrain.terrain_generator.sub_terrains = {
++            "flat_corridor": MeshPlaneTerrainCfg(proportion=0.40),
++            "straight_stairs": MeshStraightAscendingStairsTerrainCfg(
++                proportion=0.60,
++                step_height_range=(0.10, 0.16),
++                step_width=0.30,
++                platform_start=2.5,
++                platform_end=2.5,
++            ),
++        }
++
++        self.curriculum.command_ranges = None
++        self.curriculum.terrain_levels = None
++        self.commands.base_velocity.heading_command = True
++        self.commands.base_velocity.heading_control_stiffness = 1.0
++        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
++        self.commands.base_velocity.rel_heading_envs = 1.0
++        self.commands.base_velocity.rel_standing_envs = 0.0
++        self.commands.base_velocity.ranges.lin_vel_x = (0.6, 0.6)
++        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
++        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
++
++        self.observations.dreamwaq_policy.enable_corruption = False
++        self.observations.dreamwaq_policy_history.enable_corruption = False
++        self.observations.dreamwaq_reconstruction_target.enable_corruption = False
++        self.observations.dreamwaq_critic.enable_corruption = False
++        self.events.base_external_force_torque = None
++
++
++@configclass
++class UnitreeGo2DreamWaQOptimalStage10EnvCfg(UnitreeGo2DreamWaQSmoothStairsStage9EnvCfg):
++    """Stage 10: 0 网络修改 · 纯物理与等变 Loss 级最优解 (Optimal Zero-Architecture-Change Equivariant & Smooth Alignment).
++
++    核心改进与物理机理：
++    1. 彻底消灭上楼梯卡顿/卡壳（消灭避险回缩假死 Retraction Reflex）：
++       - undesired_contacts: weight = 0.0 (彻底清零小腿/大腿碰阶惩罚，允许肢体自然贴合阶梯边缘)；
++       - soft_contact_velocity_damping: weight = 0.0 (彻底清零接触速度阻尼，杜绝碰阶降速与停滞)；
++       - feet_contact_velocity_z: weight = 0.0 (彻底清零足端触地瞬间的垂直速度阻尼，释放落脚动量，消除蹬阶迟疑)；
++    2. 彻底消灭直行向左偏摆（锁死绝对激光直线）：
++       - 配合 CENet 物理镜像等变自监督损失 (消除幽灵侧漂速度 v_hat_y)；
++       - straight_ang_vel_z: weight = -0.30 (平地直行偏航角速度刚性锁强化)；
++       - flat_heading_error_l2: weight = -0.40 (平地绝对航向刚性死锁)；
++       - rear_hip_neutral_pos: weight = -0.50 (后腿双髋对称中立锁)；
++    3. 全量继承 Stage 7/8/9 黄金动力学铁笼：
++       - front_hip_neutral_pos_l2: weight = -0.80 (前腿双髋中立锁)；
++       - bilateral_hip_symmetry_equivariance_l2: weight = -0.50 (左右镜像等变硬锁)；
++       - power_distribution_variance_l2: weight = -1.0e-4 (四腿功耗方差均衡)；
++       - hip_pos_deviation_l1: weight = -0.50 (总髋位姿偏离惩罚)；
++       - terrain_relative_foot_clearance_l1: 维持 15cm 极限高台阶提膝 + 平地 22mm 磁悬浮滑行。
++    """
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        # --- 1. 彻底消灭台阶卡顿与假死：小腿碰阶与触地阻尼全部清零 ---
++        self.rewards.undesired_contacts.weight = 0.0
++        self.rewards.soft_contact_velocity_damping.weight = 0.0
++        self.rewards.feet_contact_velocity_z.weight = 0.0
++
++        # --- 2. 锁死激光级直线：强化偏航刚性阻尼 + 绝对航向死锁 + 后腿髋中立锁 ---
++        self.rewards.straight_ang_vel_z.weight = -0.30
++        self.rewards.flat_heading_error_l2.weight = -0.40
++        self.rewards.rear_hip_neutral_pos.weight = -0.50
++
++        # --- 3. 强化镜像等变与功耗平衡铁笼 ---
++        self.rewards.front_hip_neutral_pos_l2.weight = -0.80
++        self.rewards.bilateral_hip_symmetry_equivariance_l2.weight = -0.50
++        self.rewards.power_distribution_variance_l2.weight = -1.0e-4
++        self.rewards.hip_pos_deviation_l1.weight = -0.50
++
++
++@configclass
++class UnitreeGo2DreamWaQOptimalStage10EnvCfg_PLAY(UnitreeGo2DreamWaQOptimalStage10EnvCfg):
++    """Stage 10 评估与可视化配置。"""
++
++    terrain_difficulty: float = 1.0
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        self.scene.num_envs = 4
++        self.scene.env_spacing = 6.0
++        self.scene.height_scanner.debug_vis = True
++        self.viewer.origin_type = "world"
++
++        self.scene.terrain.terrain_generator.size = (12.0, 4.0)
++        self.scene.terrain.terrain_generator.num_rows = 1
++        self.scene.terrain.terrain_generator.num_cols = 4
++        self.scene.terrain.terrain_generator.curriculum = True
++        self.scene.terrain.terrain_generator.difficulty_range = (self.terrain_difficulty, self.terrain_difficulty)
++        self.scene.terrain.terrain_generator.sub_terrains = {
++            "flat_corridor": MeshPlaneTerrainCfg(proportion=0.40),
++            "straight_stairs": MeshStraightAscendingStairsTerrainCfg(
++                proportion=0.60,
++                step_height_range=(0.10, 0.16),
++                step_width=0.30,
++                platform_start=2.5,
++                platform_end=2.5,
++            ),
++        }
++
++        self.curriculum.command_ranges = None
++        self.curriculum.terrain_levels = None
++        self.commands.base_velocity.heading_command = True
++        self.commands.base_velocity.heading_control_stiffness = 1.0
++        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
++        self.commands.base_velocity.rel_heading_envs = 1.0
++        self.commands.base_velocity.rel_standing_envs = 0.0
++        self.commands.base_velocity.ranges.lin_vel_x = (0.6, 0.6)
++        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
++        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
++
++        self.observations.dreamwaq_policy.enable_corruption = False
++        self.observations.dreamwaq_policy_history.enable_corruption = False
++        self.observations.dreamwaq_reconstruction_target.enable_corruption = False
++        self.observations.dreamwaq_critic.enable_corruption = False
++
++@configclass
++class UnitreeGo2DreamWaQStage11EnvCfg(UnitreeGo2DreamWaQOptimalStage10EnvCfg):
++    """Stage 11: 黄金基准手术配置 (Gold Baseline: 0.3s Lookahead Knee-Lift + Flexible Compliance Decoupling).
++
++    核心手术与物理机理（路线 B：柔性自适应松绑流）：
++    1. 彻底消灭台阶切入卡顿与悬停（0.3s 前瞻感知 + 落脚保护门控 Landing Gate）：
++       - dual_bounded_pitch_adaptive_foot_clearance_l1 引入前向 0.3s (0.05~0.40m) 高差射线前瞻，撞阶前 0.3s 提前将前腿目标净空拔高至 16cm；
++       - 同时免除平地超额惩罚，允许前腿大弧度高提膝，一脚跨上第 1 阶踏面；
++       - clearance 权重微调至 -0.10，配合落地保护门控消除落脚惩罚死锁；
++       - 彻底保持 undesired_contacts=0, soft_contact_velocity_damping=0，消除立面畏缩；
++    2. 彻底消灭直行向右摆动（刚性约束全面松绑 80%，归还 Trot 顺应性）：
++       - 打破前四项高达 -2.30 的髋关节焊死铁笼，全部降至 -0.05 极弱引导；
++       - 归还左右前腿与后腿在对角支撑相中的微动吸震自由度，消除刚体反弹与过矫正扭力；
++       - straight_ang_vel_z 与 flat_heading_error_l2 柔化至 -0.10，保留长程航向引导的同时消除过阻尼航向震荡；
++       - power_distribution_variance_l2 柔化至 -1.0e-5，允许四腿按需动态发力。
++    """
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        # --- 1. 锁死走廊直行主轴，杜绝重生坐标系扭曲 ---
++        self.events.reset_base.params["pose_range"]["yaw"] = (0.0, 0.0)
++
++        # --- 2. 根治台阶落脚卡顿：0.3s 前瞻自适应净空 + 落地平滑门控 ---
++        self.rewards.terrain_relative_foot_clearance_l1.weight = -0.10
++        self.rewards.undesired_contacts.weight = 0.0
++        self.rewards.soft_contact_velocity_damping.weight = 0.0
++        self.rewards.feet_contact_velocity_z.weight = 0.0
++
++        # --- 3. 路线 B 柔性自适应松绑流：全面削减 80% 刚性锁，归还 Trot 顺应性，终结向右偏摆 ---
++        self.rewards.straight_ang_vel_z.weight = -0.10
++        self.rewards.flat_heading_error_l2.weight = -0.10
++        self.rewards.rear_hip_neutral_pos.weight = -0.05
++        self.rewards.front_hip_neutral_pos_l2.weight = -0.05
++        self.rewards.bilateral_hip_symmetry_equivariance_l2.weight = -0.05
++        self.rewards.power_distribution_variance_l2.weight = -1.0e-5
++        self.rewards.hip_pos_deviation_l1.weight = -0.05
++
++
++@configclass
++class UnitreeGo2DreamWaQStage11EnvCfg_PLAY(UnitreeGo2DreamWaQStage11EnvCfg):
++    """Stage 11 评估与可视化配置。"""
++
++    terrain_difficulty: float = 1.0
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        self.scene.num_envs = 4
++        self.scene.env_spacing = 6.0
++        self.scene.height_scanner.debug_vis = True
++        self.viewer.origin_type = "world"
++
++        self.scene.terrain.terrain_generator.size = (12.0, 4.0)
++        self.scene.terrain.terrain_generator.num_rows = 1
++        self.scene.terrain.terrain_generator.num_cols = 4
++        self.scene.terrain.terrain_generator.curriculum = True
++        self.scene.terrain.terrain_generator.difficulty_range = (self.terrain_difficulty, self.terrain_difficulty)
++        self.scene.terrain.terrain_generator.sub_terrains = {
++            "flat_corridor": MeshPlaneTerrainCfg(proportion=0.40),
++            "straight_stairs": MeshStraightAscendingStairsTerrainCfg(
++                proportion=0.60,
++                step_height_range=(0.10, 0.16),
++                step_width=0.30,
++                platform_start=2.5,
++                platform_end=2.5,
++            ),
++        }
++
++        self.curriculum.command_ranges = None
++        self.curriculum.terrain_levels = None
++        self.commands.base_velocity.heading_command = True
++        self.commands.base_velocity.heading_control_stiffness = 1.0
++        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
++        self.commands.base_velocity.rel_heading_envs = 1.0
++        self.commands.base_velocity.rel_standing_envs = 0.0
++        self.commands.base_velocity.ranges.lin_vel_x = (0.6, 0.6)
++        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
++        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
++
++        self.observations.dreamwaq_policy.enable_corruption = False
++        self.observations.dreamwaq_policy_history.enable_corruption = False
++        self.observations.dreamwaq_reconstruction_target.enable_corruption = False
++        self.observations.dreamwaq_critic.enable_corruption = False
++        self.events.base_external_force_torque = None
++
++
++# ==============================================================================
++# Stage 13: 纯平地洗髓定型配置 (Pure Flat Equivariant Symmetry Purify - 200 iterations)
++# ==============================================================================
++@configclass
++class UnitreeGo2DreamWaQStage13FlatPurifyEnvCfg(UnitreeGo2DreamWaQFlatEnvCfg):
++    """Stage 13: 纯平地洗髓定型手术 (Pure Flat Equivariant Symmetry Purify).
++
++    核心定位与设计思想（方案 B）：
++    1. 彻底切断任何楼梯地形（100% 纯平面 plane），0 台阶几何扰动；
++    2. 建立纯直行激光走廊指令空间 (vx in [0.6, 0.8], vy=0, wz=0, heading=0)；
++    3. 全域施加【对角对称 + 双向全域等变镜像对称 + 四肢功耗均等】强力洗髓力场：
++       - bilateral_hip_symmetry_equivariance_l2 = -0.50 强制左右髋关节偏差严格镜像对称
++       - joint_diagonal_symmetry_l2 = -0.10 强制对角肢体运动学绝对对称
++       - power_distribution_variance_l2 = -1.0e-4 强制四腿机械功率绝对均摊，根除单侧推力偏大
++       - straight_ang_vel_z = -0.35 与 flat_heading_error_l2 = -0.50 锁死激光级航向
++       - lin_vel_xy_orthogonal_l2 = -0.30 严惩任何侧滑横移
++    4. 200 轮纯平地快训，彻底洗净前 7000 轮在楼梯上残留的单侧偏展与代偿神经突触，把零位彻底调平！
++    """
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        # --- 1. 彻底切换为纯平面，排除任何台阶网格扰动 ---
++        self.scene.terrain.terrain_type = "plane"
++        self.scene.terrain.terrain_generator = None
++        self.curriculum.terrain_levels = None
++        self.curriculum.command_ranges = None
++
++        # --- 2. 纯直行激光走廊指令空间：锁死主轴，杜绝重生偏航撕扯 ---
++        self.events.reset_base.params["pose_range"]["yaw"] = (0.0, 0.0)
++        self.commands.base_velocity.heading_command = True
++        self.commands.base_velocity.heading_control_stiffness = 1.0
++        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
++        self.commands.base_velocity.rel_heading_envs = 1.0
++        self.commands.base_velocity.rel_standing_envs = 0.0
++        self.commands.base_velocity.ranges.lin_vel_x = (0.6, 0.8)
++        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
++        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
++
++        # --- 3. 对角对称 + 镜像等变洗髓力场 (Equivariant Symmetry Wash) ---
++        self.rewards.bilateral_hip_symmetry_equivariance_l2.weight = -0.50
++        self.rewards.joint_diagonal_symmetry_l2.weight = -0.10
++        self.rewards.power_distribution_variance_l2.weight = -1.0e-4
++        self.rewards.front_hip_neutral_pos_l2.weight = -0.20
++        self.rewards.rear_hip_neutral_pos.weight = -0.20
++        self.rewards.hip_pos_deviation_l1.weight = -0.10
++
++        # --- 4. 激光直行航向与侧滑严惩 ---
++        self.rewards.straight_ang_vel_z.weight = -0.35
++        self.rewards.flat_heading_error_l2.weight = -0.50
++        self.rewards.lin_vel_xy_orthogonal_l2.weight = -0.30
++
++        # --- 5. 平地姿态悬浮与动作平滑 ---
++        self.rewards.track_lin_vel_xy_exp.weight = 1.5
++        self.rewards.track_ang_vel_z_exp.weight = 1.0
++        self.rewards.lin_vel_z_l2.weight = -2.5
++        self.rewards.ang_vel_xy_l2.weight = -0.10
++        self.rewards.flat_orientation_l2.weight = -0.30
++        self.rewards.base_height_relative_l2.weight = -1.5
++        self.rewards.base_height_relative_l2.params["target_height"] = 0.30
++        self.rewards.terrain_relative_foot_clearance_l1.weight = -0.01
++
++        # 禁用碰撞阻尼与脚接触突变
++        self.rewards.undesired_contacts.weight = 0.0
++        self.rewards.soft_contact_velocity_damping.weight = 0.0
++        self.rewards.feet_contact_velocity_z.weight = 0.0
++
++
++@configclass
++class UnitreeGo2DreamWaQStage13FlatPurifyEnvCfg_PLAY(UnitreeGo2DreamWaQStage13FlatPurifyEnvCfg):
++    """Stage 13 纯平地洗髓评估与可视化配置。"""
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        self.scene.num_envs = 4
++        self.scene.env_spacing = 5.0
++        self.viewer.origin_type = "world"
++
++        self.commands.base_velocity.ranges.lin_vel_x = (0.6, 0.6)
++        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
++        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
++
++        self.observations.dreamwaq_policy.enable_corruption = False
++        self.observations.dreamwaq_policy_history.enable_corruption = False
++        self.observations.dreamwaq_reconstruction_target.enable_corruption = False
++        self.observations.dreamwaq_critic.enable_corruption = False
++        self.events.base_external_force_torque = None
++
++
++# ==============================================================================
++# Stage 14: 纯平地洗直 + 15cm 台阶跨越大一统融合 (Unified Flat-Stair Synergy)
++# ==============================================================================
++@configclass
++class UnitreeGo2DreamWaQStage14UnifiedEnvCfg(UnitreeGo2DreamWaQOptimalStage10EnvCfg):
++    """Stage 14: 大一统黄金融合手术配置 (Unified Flat-Stair Synergy Baseline).
++
++    核心定位与设计思想：
++    1. 以 Stage 13 纯平地洗直检查点 model_7189.pt 为基石，继承其高度对称的零位突触；
++    2. 返回走廊地形（40% 平地走廊 + 60% 10~16cm 连续台阶）；
++    3. 激活 0.3s 前瞻感知门控（alpha_ahead -> 1.0, clearance=-0.12），撞阶前 0.3s 强制拔高前膝；
++    4. 施加黄金固化等变力场（bilateral_hip=-0.20, power_var=-5e-5, straight_wz=-0.25, flat_heading=-0.35），
++       将洗平的激光级直行步态与 15cm 台阶高提膝翻越完美融合，终结偏摆与卡顿！
++    """
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        # --- 1. 锁死走廊直行主轴，杜绝重生坐标系扭曲 ---
++        self.events.reset_base.params["pose_range"]["yaw"] = (0.0, 0.0)
++
++        # --- 2. 0.3s 前瞻感知自适应净空 + 落地平滑门控 ---
++        self.rewards.terrain_relative_foot_clearance_l1.weight = -0.12
++        self.rewards.undesired_contacts.weight = 0.0
++        self.rewards.soft_contact_velocity_damping.weight = 0.0
++        self.rewards.feet_contact_velocity_z.weight = 0.0
++
++        # --- 3. 固化 Stage 13 洗直对称性：等变镜像 + 功耗均等 + 航向阻尼 ---
++        self.rewards.bilateral_hip_symmetry_equivariance_l2.weight = -0.20
++        self.rewards.joint_diagonal_symmetry_l2.weight = -0.05
++        self.rewards.power_distribution_variance_l2.weight = -5.0e-5
++        self.rewards.straight_ang_vel_z.weight = -0.25
++        self.rewards.flat_heading_error_l2.weight = -0.35
++        self.rewards.front_hip_neutral_pos_l2.weight = -0.10
++        self.rewards.rear_hip_neutral_pos.weight = -0.10
++        self.rewards.hip_pos_deviation_l1.weight = -0.08
++
++
++@configclass
++class UnitreeGo2DreamWaQStage14UnifiedEnvCfg_PLAY(UnitreeGo2DreamWaQStage14UnifiedEnvCfg):
++    """Stage 14 评估与可视化配置。"""
++
++    terrain_difficulty: float = 1.0
++
++    def __post_init__(self):
++        super().__post_init__()
++
++        self.scene.num_envs = 4
++        self.scene.env_spacing = 6.0
++        self.scene.height_scanner.debug_vis = True
++        self.viewer.origin_type = "world"
++
++        self.scene.terrain.terrain_generator.size = (12.0, 4.0)
++        self.scene.terrain.terrain_generator.num_rows = 1
++        self.scene.terrain.terrain_generator.num_cols = 4
++        self.scene.terrain.terrain_generator.curriculum = True
++        self.scene.terrain.terrain_generator.difficulty_range = (self.terrain_difficulty, self.terrain_difficulty)
++        self.scene.terrain.terrain_generator.sub_terrains = {
++            "flat_corridor": MeshPlaneTerrainCfg(proportion=0.40),
++            "straight_stairs": MeshStraightAscendingStairsTerrainCfg(
++                proportion=0.60,
++                step_height_range=(0.10, 0.16),
++                step_width=0.30,
++                platform_start=2.5,
++                platform_end=2.5,
++            ),
++        }
++
++        self.curriculum.command_ranges = None
++        self.curriculum.terrain_levels = None
++        self.commands.base_velocity.heading_command = True
++        self.commands.base_velocity.heading_control_stiffness = 1.0
++        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
++        self.commands.base_velocity.rel_heading_envs = 1.0
++        self.commands.base_velocity.rel_standing_envs = 0.0
++        self.commands.base_velocity.ranges.lin_vel_x = (0.6, 0.6)
++        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
++        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
++
++        self.observations.dreamwaq_policy.enable_corruption = False
++        self.observations.dreamwaq_policy_history.enable_corruption = False
++        self.observations.dreamwaq_reconstruction_target.enable_corruption = False
++        self.observations.dreamwaq_critic.enable_corruption = False
++        self.events.base_external_force_torque = None
++
++
++
++
++
++
++
++
++
++
+diff --git a/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/go2_env_cfg.py b/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/go2_env_cfg.py
+index 0e0787c..71ac4c9 100644
+--- a/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/go2_env_cfg.py
++++ b/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/go2_env_cfg.py
+@@ -3,7 +3,19 @@
+ #
+ # SPDX-License-Identifier: Apache-2.0
+ 
+-"""Base environment configuration for the independent Unitree Go2 DreamWaQ task."""
++"""宇树 Go2 四足机器人 DreamWaQ 核心基础环境配置 (Base Environment Configuration)。
++
++【架构与设计哲学】
++1. 本文件定义了 Unitree Go2 运行 DreamWaQ 强化学习算法的通用骨架配置：
++   - 交互场景定义 (InteractiveSceneCfg): 地形导入、物理材料、高程扫描射线、接触力传感器及光照。
++   - 速度指令生成器 (CommandsCfg): 包含课程自适应范围与驻车零速指令机制。
++   - 动作空间 (ActionsCfg): 采用 12 关节标称位置偏移控制（PD 闭环底层跟踪）。
++   - 观测系统 (ObservationsCfg): 严格遵循 DreamWaQ 的非对称信息架构（Asymmetric Actor-Critic + CENet/VAE）。
++   - 随机化事件 (EventCfg): 域随机化（Domain Randomization）覆盖摩擦、负载、质心、电机强度与脉冲扰动。
++   - 基础奖励项 (RewardsCfg): 全套标准化运动奖励、能耗抑制与姿态阻尼项。
++   - 终止条件 (TerminationsCfg): 摔倒、触底碰撞、极限倾覆与超时截断。
++   - 课程机制 (CurriculumCfg): 地形等级递进与速度指令范围扩展的双重课程。
++"""
+ 
+ import math
+ 
+@@ -30,10 +42,25 @@ from dreamwaq_lab.robots.unitree_go2 import UNITREE_GO2_CFG
+ from .. import mdp
+ 
+ 
++# ==============================================================================
++# 全局常量定义 (Global Constants)
++# ==============================================================================
++# 【足端刚体名称列表】：用于接触力传感器采样、触地时间统计与足端规整项
+ FOOT_BODY_NAMES = ["FL_foot", "FR_foot", "RL_foot", "RR_foot"]
++
++# 【机身目标标称对地高度 (单位: 米)】：
++# 【物理依据】：Go2 机械腿自然站立全伸展高度约 0.38m，折叠常态高度推荐 0.31m ~ 0.35m。
++# 【调参指南】：
++#   - 0.35m：腿部更加直立挺拔，下肢能耗更低，但跨越超高台阶时俯仰下蹲裕度略小；
++#   - 0.31m~0.32m：低重心稳健姿态，爬坡与抗冲击能力极强，但关节扭矩略有上升。
+ BASE_HEIGHT_TARGET = 0.35
++
++# 【电机扭矩放大系数随机化范围】：(0.9 ~ 1.1)
++# 【物理依据】：模拟实机电机驱动板在不同温升与母线电压下的执行力衰减（±10% 动力波动）。
+ GO2_MOTOR_STRENGTH_RANGE = (0.9, 1.1)
+ 
++# 【显式 12 关节拓扑顺序定义】：
++# 【工程避坑要点】：绝不依赖正则表达式或乱序字典遍历！固定顺序确保训练、推理、ONNX导出与实机 C++ 部署的绝对一致。
+ GO2_ACTION_JOINT_NAMES = [
+     "FL_hip_joint",
+     "FL_thigh_joint",
+@@ -50,26 +77,32 @@ GO2_ACTION_JOINT_NAMES = [
+ ]
+ 
+ 
++# ==============================================================================
++# 1. 物理仿真交互场景配置 (Interactive Scene Configuration)
++# ==============================================================================
+ @configclass
+ class UnitreeGo2DreamWaQSceneCfg(InteractiveSceneCfg):
+-    """Rough-terrain scene for Go2 DreamWaQ.
++    """Go2 DreamWaQ 复杂地形交互场景配置。
+ 
+-    DreamWaQ is blind at deployment, so this scene keeps the height scanner for
+-    the privileged critic and does not instantiate a depth camera.
++    【核心理念】：
++    - 实机部署时机器狗为“盲狗”（Blind Locomotion，无深度相机），因此 Actor 不包含高程图输入；
++    - 在仿真中保留高度扫描射线（height_scanner）作为特权信息（Privileged Information）供给 Critic 网络，
++      引导 Critic 精确评估地形势能并计算足端高程清除奖励。
+     """
+ 
++    # --- 地形导入器配置 ---
+     terrain = TerrainImporterCfg(
+         prim_path="/World/ground",
+         terrain_type="generator",
+         terrain_generator=GO2_EXTENDED_ROUGH_TERRAINS_CFG,
+-        max_init_terrain_level=1,
+-        collision_group=-1,
++        max_init_terrain_level=1,  # 初始重生最高地形等级（从低难度起步）
++        collision_group=-1,        # 碰撞过滤分组
+         physics_material=sim_utils.RigidBodyMaterialCfg(
+-            friction_combine_mode="multiply",
+-            restitution_combine_mode="average",
+-            static_friction=1.0,
+-            dynamic_friction=1.0,
+-            restitution=0.0,
++            friction_combine_mode="multiply",  # 摩擦系数合成模式：相乘
++            restitution_combine_mode="average", # 恢复系数合成模式：取平均
++            static_friction=1.0,               # 标称静摩擦系数
++            dynamic_friction=1.0,              # 标称动摩擦系数
++            restitution=0.0,                   # 完全非弹性碰撞（无回弹）
+         ),
+         visual_material=sim_utils.MdlFileCfg(
+             mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
+@@ -79,8 +112,14 @@ class UnitreeGo2DreamWaQSceneCfg(InteractiveSceneCfg):
+         debug_vis=False,
+     )
+ 
++    # --- 机器人刚体模型配置 ---
++    # 基于宇树官方 Go2 USD 资产定义，使用 ENV_REGEX_NS 占位符实例化多并行环境
+     robot: ArticulationCfg = UNITREE_GO2_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+ 
++    # --- 机身特权高度扫描仪 (Height Scanner / RayCaster) ---
++    # 【机制说明】：从机身 base 坐标系正上方 20.0m 向下发射射线，计算地面高度网格
++    # 【射线网格】：长 1.6m x 宽 1.0m，分辨率 0.1m（共 17 x 11 = 187 根射线），沿机身 Yaw 对齐
++    # 【作用】：仅供给特权 Critic 评估状态价值，以及局部足端清除度奖励函数
+     height_scanner = RayCasterCfg(
+         prim_path="{ENV_REGEX_NS}/Robot/base",
+         offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+@@ -90,12 +129,15 @@ class UnitreeGo2DreamWaQSceneCfg(InteractiveSceneCfg):
+         mesh_prim_paths=["/World/ground"],
+     )
+ 
++    # --- 足端接触力传感器 (Contact Sensor) ---
++    # 记录触地法向力、触地标志及腾空时间（track_air_time=True），保留 3 帧历史记录
+     contact_forces = ContactSensorCfg(
+         prim_path="{ENV_REGEX_NS}/Robot/.*",
+         history_length=3,
+         track_air_time=True,
+     )
+ 
++    # --- 场景天空光照 ---
+     sky_light = AssetBaseCfg(
+         prim_path="/World/skyLight",
+         spawn=sim_utils.DomeLightCfg(
+@@ -105,38 +147,52 @@ class UnitreeGo2DreamWaQSceneCfg(InteractiveSceneCfg):
+     )
+ 
+ 
++# ==============================================================================
++# 2. 运动指令生成器配置 (Command Specifications)
++# ==============================================================================
+ @configclass
+ class CommandsCfg:
+-    """Command specifications for DreamWaQ velocity tracking."""
++    """DreamWaQ 速度追踪指令配置。"""
+ 
++    # 【线速度与角速度指令采样器】：
++    # 【机制说明】：
++    # 1. 周期性（每隔 10.0s）在速度范围内随机抽取一组 [vx, vy, yaw_rate] 指令。
++    # 2. rel_standing_envs: 强制分配 5% 的环境输入全零指令 [0, 0, 0]，训练静止站立防抖能力。
++    # 3. ranges vs limit_ranges: 初始采样范围较窄（降低冷启动难度），随着课程推进自适应扩展至 limit_ranges。
+     base_velocity = mdp.UniformLevelVelocityCommandCfg(
+         asset_name="robot",
+-        resampling_time_range=(10.0, 10.0),
+-        rel_standing_envs=0.05,
+-        # Training does not need command arrows. Keeping this disabled also
+-        # avoids a remote arrow USD dependency during headless startup.
+-        debug_vis=False,
++        resampling_time_range=(10.0, 10.0),  # 指令重采样周期 (秒)
++        rel_standing_envs=0.05,             # 静态站立环境比例 (5%)
++        debug_vis=False,                    # 禁用指令箭头 USD，防止无头集群启动依赖网络延迟
++        # 初始速度采样范围 (Stage 0 阶段)：
+         ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
+-            lin_vel_x=(-0.5, 0.5),
+-            lin_vel_y=(-0.2, 0.2),
+-            ang_vel_z=(-0.3, 0.3),
++            lin_vel_x=(-0.5, 0.5),           # 前进/后退: -0.5 ~ 0.5 m/s
++            lin_vel_y=(-0.2, 0.2),           # 侧移: -0.2 ~ 0.2 m/s
++            ang_vel_z=(-0.3, 0.3),           # 转向: -0.3 ~ 0.3 rad/s (~17°/s)
+         ),
++        # 课程扩展极限范围 (完全体能力上限)：
+         limit_ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
+-            lin_vel_x=(-1.5, 1.5),
+-            lin_vel_y=(-0.6, 0.6),
+-            ang_vel_z=(-0.8, 0.8),
++            lin_vel_x=(-1.5, 1.5),           # 极速前冲: -1.5 ~ 1.5 m/s
++            lin_vel_y=(-0.6, 0.6),           # 极速侧行: -0.6 ~ 0.6 m/s
++            ang_vel_z=(-0.8, 0.8),           # 极速旋转: -0.8 ~ 0.8 rad/s (~45°/s)
+         ),
+     )
+ 
+ 
++# ==============================================================================
++# 3. 动作空间配置 (Action Specifications)
++# ==============================================================================
+ @configclass
+ class ActionsCfg:
+-    """Action specifications for Go2.
+-
+-    The explicit joint list avoids relying on regex order during training,
+-    play, export, and deployment.
+-    """
+-
++    """Go2 关节位置控制输出规范。"""
++
++    # 【关节位置残差动作 (PD Joint Position Delta)】：
++    # 【机制与公式】：
++    #   q_target = q_nominal + scale * action
++    # 【工程调参机理】：
++    #   - scale = 0.25：策略输出归一化在 [-1, 1] 区间，乘以 0.25 对应每个关节最大角度偏置为 ±0.25 rad (~14.3°)。
++    #   - 增大幅度（如 0.5）：动作更激进，跨越高台阶更容易，但极易引发电机高频震荡与超调；
++    #   - 减小幅度（如 0.15）：步态极其平稳，但台阶通过性不足。0.25 是工业界四足狗的黄金标杆。
+     joint_pos = mdp.JointPositionActionCfg(
+         asset_name="robot",
+         joint_names=GO2_ACTION_JOINT_NAMES,
+@@ -147,17 +203,34 @@ class ActionsCfg:
+     )
+ 
+ 
++# ==============================================================================
++# 4. 观测空间配置 (Observation Specifications - DreamWaQ 核心)
++# ==============================================================================
+ @configclass
+ class ObservationsCfg:
+-    """Observation specifications for DreamWaQ."""
++    """DreamWaQ 专属非对称观测组定义。
++
++    【核心结构】：
++    1. ProprioceptionCfg (带噪本体感知): 包含 IMU、关节角度、速度、指令与上一帧动作，注入现实级噪声，供给部署 Actor。
++    2. DreamWaQPolicyHistoryCfg (5 步历史滑动窗): 连续 5 帧本体感知时序，送入 CENet (VAE) 推理隐式动力学表征 z。
++    3. DreamWaQReconstructionTargetCfg (干净本体感知下一帧): 作为 VAE 重构自监督 Loss 的真实监督信号。
++    4. DreamWaQCriticCfg (特权全局感知): 供给特权 Critic 训练，包含真实机身线速度、扭矩、加速度、足端冲击力与局部高程网格。
++    """
+ 
+     @configclass
+     class ProprioceptionCfg(ObsGroup):
+-        """Noisy proprioception available to the deployed actor."""
++        """部署 Actor 所能获取的带噪传感器读数（Noisy Proprioception）。"""
+ 
++        # 机身角速度 (IMU 陀螺仪): 缩放 0.2，添加 ±0.2 rad/s 均匀噪声
+         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.2, clip=(-100, 100), noise=Unoise(n_min=-0.2, n_max=0.2))
++
++        # 机身投影重力矢量 [gx, gy, gz]: 描述机身倾角姿态，添加 ±0.05 噪声
+         projected_gravity = ObsTerm(func=mdp.projected_gravity, clip=(-100, 100), noise=Unoise(n_min=-0.05, n_max=0.05))
++
++        # 当前速度目标指令 [vx_cmd, vy_cmd, yaw_rate_cmd]: 无噪声
+         velocity_commands = ObsTerm(func=mdp.generated_commands, clip=(-100, 100), params={"command_name": "base_velocity"})
++
++        # 12 关节相对标称位置角度误差: 编码器精度误差注入 ±0.01 rad (~0.57°)
+         joint_pos = ObsTerm(
+             func=mdp.joint_pos_rel,
+             clip=(-100, 100),
+@@ -170,6 +243,8 @@ class ObservationsCfg:
+                 )
+             },
+         )
++
++        # 12 关节角速度: 缩放 0.05，差分测速噪声注入 ±1.5 rad/s
+         joint_vel = ObsTerm(
+             func=mdp.joint_vel_rel,
+             scale=0.05,
+@@ -183,15 +258,17 @@ class ObservationsCfg:
+                 )
+             },
+         )
++
++        # 上一时刻动作输出 a_{t-1}: 提供控制自回归记忆
+         last_action = ObsTerm(func=mdp.last_action, clip=(-100, 100))
+ 
+         def __post_init__(self):
+-            self.enable_corruption = True
+-            self.concatenate_terms = True
++            self.enable_corruption = True  # 启用噪声注入
++            self.concatenate_terms = True  # 拼合成单一平坦特征向量
+ 
+     @configclass
+     class CleanProprioceptionCfg(ObsGroup):
+-        """Clean proprioception for critic and reconstruction targets."""
++        """无噪声干净本体感知（用于特权 Critic 与 VAE 重构目标）。"""
+ 
+         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.2, clip=(-100, 100))
+         projected_gravity = ObsTerm(func=mdp.projected_gravity, clip=(-100, 100))
+@@ -222,16 +299,16 @@ class ObservationsCfg:
+         last_actions = ObsTerm(func=mdp.last_action, clip=(-100, 100))
+ 
+         def __post_init__(self):
+-            self.enable_corruption = False
++            self.enable_corruption = False  # 禁用噪声
+             self.concatenate_terms = True
+ 
+     @configclass
+     class DreamWaQPolicyCfg(ProprioceptionCfg):
+-        """Current proprioception used by the actor."""
++        """Actor 当前帧单步感知输入。"""
+ 
+     @configclass
+     class DreamWaQPolicyHistoryCfg(ProprioceptionCfg):
+-        """Five-frame proprioception history consumed by CENet."""
++        """CENet (VAE) 所需的 5 帧滑动历史感知缓存 (维度: 5 * Dim_Proprioception)。"""
+ 
+         def __post_init__(self):
+             super().__post_init__()
+@@ -240,18 +317,16 @@ class ObservationsCfg:
+ 
+     @configclass
+     class DreamWaQReconstructionTargetCfg(CleanProprioceptionCfg):
+-        """Clean proprioception target for CENet next-state reconstruction."""
++        """CENet 下一时刻状态自监督重构目标。"""
+ 
+     @configclass
+     class DreamWaQCriticCfg(CleanProprioceptionCfg):
+-        """Privileged critic input: clean proprioception + velocity + wrench + height scan."""
++        """特权 Critic 输入：无噪声本体感知 + 真实线速度 + 动力学加速度/扭矩 + 接触力 + 地形高程。"""
+ 
++        # 真实机身世界/机体系 3D 线速度 (实机中通常无法精准直测)
+         base_lin_vel = ObsTerm(func=mdp.base_lin_vel, clip=(-100, 100))
+-        # external_force_torque = ObsTerm(
+-        #     func=mdp.base_external_wrench,
+-        #     params={"asset_cfg": SceneEntityCfg("robot", body_names="base")},
+-        #     clip=(-100, 100),
+-        # )
++
++        # 12 关节瞬时角加速度 (缩放 1e-4)
+         joint_acc = ObsTerm(
+             func=mdp.joint_acc,
+             params={
+@@ -264,6 +339,8 @@ class ObservationsCfg:
+             clip=(-100, 100),
+             scale=1.0e-4,
+         )
++
++        # 12 关节驱动力矩 (缩放 0.01)
+         joint_torque = ObsTerm(
+             func=mdp.joint_effort,
+             params={
+@@ -276,6 +353,8 @@ class ObservationsCfg:
+             clip=(-100, 100),
+             scale=0.01,
+         )
++
++        # 四足足端接触力范数 (缩放 1e-3)
+         contact_force = ObsTerm(
+             func=mdp.foot_contact_force_norm,
+             params={
+@@ -288,27 +367,37 @@ class ObservationsCfg:
+             clip=(-100, 100),
+             scale=1.0e-3,
+         )
++
++        # 局部 187 点高程扫描网格 (截断在 ±1.0m 范围内)
+         height_scan = ObsTerm(
+             func=mdp.height_scan,
+             params={"sensor_cfg": SceneEntityCfg("height_scanner")},
+             clip=(-1.0, 1.0),
+         )
+ 
++    # 注册各观测组实例
+     dreamwaq_policy: DreamWaQPolicyCfg | None = DreamWaQPolicyCfg()
+     dreamwaq_policy_history: DreamWaQPolicyHistoryCfg | None = DreamWaQPolicyHistoryCfg()
+     dreamwaq_reconstruction_target: DreamWaQReconstructionTargetCfg | None = DreamWaQReconstructionTargetCfg()
+     dreamwaq_critic: DreamWaQCriticCfg | None = DreamWaQCriticCfg()
+ 
+ 
++# ==============================================================================
++# 5. 域随机化事件配置 (Domain Randomization Events)
++# ==============================================================================
+ @configclass
+ class EventCfg:
+-    """Domain randomization and reset events."""
++    """物理动力学随机化与环境重置事件。"""
+ 
++    # 【电机驱动强度系数随机化】：每次重置时在 (0.9, 1.1) 之间缩放扭矩
+     motor_strength = EventTerm(
+         func=mdp.randomize_motor_strength,
+         mode="reset",
+         params={"strength_range": GO2_MOTOR_STRENGTH_RANGE},
+     )
++
++    # 【刚体接触材质摩擦力随机化】：
++    # 【模式】：启动时（startup）随机分布到 64 个桶中，覆盖 0.4 ~ 1.25 的动静摩擦
+     physics_material = EventTerm(
+         func=mdp.randomize_rigid_body_material,
+         mode="startup",
+@@ -320,6 +409,8 @@ class EventCfg:
+             "num_buckets": 64,
+         },
+     )
++
++    # 【机身附加质量随机化】：(-0.5kg ~ +2.0kg)
+     add_base_mass = EventTerm(
+         func=mdp.randomize_rigid_body_mass,
+         mode="startup",
+@@ -329,6 +420,8 @@ class EventCfg:
+             "operation": "add",
+         },
+     )
++
++    # 【腿部各连杆质量比例微调】：(0.95 ~ 1.05)，重新计算转动惯量
+     scale_other_body_mass = EventTerm(
+         func=mdp.randomize_rigid_body_mass,
+         mode="startup",
+@@ -339,6 +432,8 @@ class EventCfg:
+             "recompute_inertia": True,
+         },
+     )
++
++    # 【质心微小偏移 (CoM Jitter)】：打破对称平衡，训练重心漂移鲁棒性
+     base_com = EventTerm(
+         func=mdp.randomize_rigid_body_com,
+         mode="startup",
+@@ -347,6 +442,8 @@ class EventCfg:
+             "com_range": {"x": (-0.01, 0.01), "y": (-0.005, 0.005), "z": (-0.003, 0.003)},
+         },
+     )
++
++    # 【机身恒定外力/力矩】：基类默认置零
+     base_external_force_torque = EventTerm(
+         func=mdp.apply_external_force_torque,
+         mode="reset",
+@@ -356,6 +453,8 @@ class EventCfg:
+             "torque_range": (0.0, 0.0),
+         },
+     )
++
++    # 【重生初始位姿采样】：X/Y 在 ±0.5m 内抖动，Yaw 偏航全向随机 (-π ~ π)
+     reset_base = EventTerm(
+         func=mdp.reset_root_state_uniform,
+         mode="reset",
+@@ -371,6 +470,8 @@ class EventCfg:
+             },
+         },
+     )
++
++    # 【重生关节角度缩放】：(0.95 ~ 1.05) 初始站立角度扰动
+     reset_robot_joints = EventTerm(
+         func=mdp.reset_joints_by_scale,
+         mode="reset",
+@@ -379,6 +480,8 @@ class EventCfg:
+             "velocity_range": (0.0, 0.0),
+         },
+     )
++
++    # 【关节执行器 PD 增益缩放】：Kp、Kd 在 ±10% 范围内均匀缩放
+     robot_joint_stiffness_and_damping = EventTerm(
+         func=mdp.randomize_actuator_gains,
+         mode="reset",
+@@ -390,6 +493,8 @@ class EventCfg:
+             "distribution": "uniform",
+         },
+     )
++
++    # 【电机零点标定偏置 (Zero Offset)】：模拟电机安装装配或编码器机械零点微小漂移 (±0.035 rad, 约 ±2°)
+     motor_zero_offset = EventTerm(
+         func=mdp.randomize_action_joint_pos_offset,
+         mode="reset",
+@@ -398,6 +503,8 @@ class EventCfg:
+             "offset_range": (-0.035, 0.035),
+         },
+     )
++
++    # 【间歇性外部速度推力脉冲 (Periodic Pushes)】：每 10~15 秒施加一次 X 轴 ±0.2m/s, Y 轴 ±0.1m/s 的瞬时冲击
+     push_robot = EventTerm(
+         func=mdp.push_by_setting_velocity,
+         mode="interval",
+@@ -406,31 +513,186 @@ class EventCfg:
+     )
+ 
+ 
++# ==============================================================================
++# 6. 强化学习奖励函数族 (Base Reward Terms)
++# ==============================================================================
+ @configclass
+ class RewardsCfg:
+-    """Reward terms for Go2 DreamWaQ."""
++    """Go2 DreamWaQ 全套标准奖励函数项定义。"""
+ 
++    # --- 速度指令追踪项 ---
++    # 【线速度高斯核追踪】：exp(-||v_xy - cmd_xy||^2 / std^2)
+     track_lin_vel_xy_exp = RewTerm(
+         func=mdp.track_lin_vel_xy_exp,
+         weight=1.5,
+         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
+     )
++    # 【角速度高斯核追踪】：exp(-(w_z - cmd_wz)^2 / std^2)
+     track_ang_vel_z_exp = RewTerm(
+         func=mdp.track_ang_vel_z_exp,
+         weight=1.0,
+         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
+     )
++
++    # --- 姿态与振荡抑制项 ---
++    # 【机身 Z 轴线速度二次方惩罚】：抑制颠簸上下蹦跳
+     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
++
++    # 【机身 Roll/Pitch 角速度二次方惩罚】：抑制左右颠簸与俯仰剧烈晃动（基类标称 -0.05，在训练配置中微调至 -0.20）
+     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
+ 
++    # 【机身水平投影重力倾角惩罚】：约束重力矢量与机身 Z 轴平行（基类标称 -0.2，训练配置微调至 -1.0）
+     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-0.2)
++    roll_orientation_l2 = RewTerm(func=mdp.roll_orientation_l2, weight=0.0)
++    terrain_adaptive_pitch_orientation_l2 = RewTerm(
++        func=mdp.terrain_adaptive_pitch_orientation_l2,
++        weight=0.0,
++        params={"asset_cfg": SceneEntityCfg("robot"), "stairs_pitch_threshold": 0.08},
++    )
++
++    # --- 防侧漂与姿态规整项 (Anti-Drift & Symmetrical Posture) ---
++    # 【正交侧向速度二次方惩罚】：惩罚垂直于前进指令方向的横向漂移，消除“螃蟹式滑步”
+     lin_vel_xy_orthogonal_l2 = RewTerm(
+         func=mdp.lin_vel_xy_orthogonal_l2,
+         weight=0.0,
+         params={"command_name": "base_velocity", "command_threshold": 0.1},
+     )
++
++    # 【髋关节标称位姿偏离惩罚 (WaxberryS 标准)】：当直行时惩罚大腿髋关节偏离 0 度的八字脚外撇，根除偏航力矩不对称
++    hip_pos_deviation_l1 = RewTerm(
++        func=mdp.hip_pos_deviation_l1,
++        weight=0.0,
++        params={
++            "command_name": "base_velocity",
++            "command_threshold": 0.1,
++            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint"]),
++        },
++    )
++
++    # 【摆动相专属髋关节外展画弧惩罚 (带全向与自转动态门控)】
++    swing_hip_abduction_l2 = RewTerm(
++        func=mdp.swing_hip_abduction_l2,
++        weight=0.0,
++        params={
++            "command_name": "base_velocity",
++            "command_threshold": 0.08,
++            "yaw_threshold": 0.15,
++            "contact_threshold": 1.0,
++            "contact_sensor_cfg": SceneEntityCfg("contact_forces", body_names=["FL_foot", "FR_foot", "RL_foot", "RR_foot"]),
++            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint"]),
++        },
++    )
++
++    # 【后肢对称外展约束 (消除单侧独甩)】
++    rear_hip_swing_symmetry_l2 = RewTerm(
++        func=mdp.rear_hip_swing_symmetry_l2,
++        weight=0.0,
++        params={
++            "command_name": "base_velocity",
++            "command_threshold": 0.08,
++            "yaw_threshold": 0.15,
++            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint"]),
++        },
++    )
++
++    # 【平地绝对偏航角误差惩罚】：直行时惩罚偏航角偏离 0 度的二次方误差，促使策略主动反向纠偏打轮
++    flat_heading_error_l2 = RewTerm(
++        func=mdp.flat_heading_error_l2,
++        weight=0.0,
++        params={"command_name": "base_velocity", "yaw_threshold": 0.15, "target_heading_rad": 0.0},
++    )
++
++    # 【双向等变镜像对称约束 (无截断，杜绝内扣套利)】
++    bilateral_hip_symmetry_equivariance_l2 = RewTerm(
++        func=mdp.bilateral_hip_symmetry_equivariance_l2,
++        weight=0.0,
++        params={
++            "command_name": "base_velocity",
++            "command_threshold": 0.08,
++            "yaw_threshold": 0.15,
++            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint"]),
++        },
++    )
++
++    # 【前腿髋关节双向中立零位对中锁】
++    front_hip_neutral_pos_l2 = RewTerm(
++        func=mdp.front_hip_neutral_pos_l2,
++        weight=0.0,
++        params={
++            "command_name": "base_velocity",
++            "command_threshold": 0.08,
++            "yaw_threshold": 0.15,
++            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint"]),
++        },
++    )
++
++    # 【四肢机械功率方差惩罚 (对标 agent.md 功耗均衡)】
++    power_distribution_variance_l2 = RewTerm(
++        func=mdp.power_distribution_variance_l2,
++        weight=0.0,
++        params={"asset_cfg": SceneEntityCfg("robot")},
++    )
++
++    # 【直行偏航角速度刚性阻尼惩罚 (Stage 9 锁死直线)】
++    straight_ang_vel_z = RewTerm(
++        func=mdp.straight_ang_vel_z_l2,
++        weight=0.0,
++        params={"command_name": "base_velocity", "yaw_threshold": 0.10},
++    )
++
++    # 【连续接触速度阻尼 (Stage 9 柔化撞阶，消灭碰阶回缩假死与卡顿)】
++    soft_contact_velocity_damping = RewTerm(
++        func=mdp.soft_contact_velocity_damping_l2,
++        weight=0.0,
++        params={
++            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=[".*thigh", ".*calf"]),
++            "asset_cfg": SceneEntityCfg("robot"),
++            "contact_force_threshold": 2.0,
++        },
++    )
++
++    # 【后腿髋关节双向中立零位锁 (Stage 9 消灭后驱单侧偏推)】
++    rear_hip_neutral_pos = RewTerm(
++        func=mdp.rear_hip_neutral_pos_l2,
++        weight=0.0,
++        params={
++            "command_name": "base_velocity",
++            "command_threshold": 0.08,
++            "yaw_threshold": 0.15,
++            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_joint"]),
++        },
++    )
++
++    # --- 足端软着陆阻尼与接触力缓冲 (Soft Landing Damping & Contact Force Cushioning) ---
++    feet_contact_velocity_z = RewTerm(
++        func=mdp.feet_contact_velocity_z_l2,
++        weight=0.0,
++        params={
++            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*foot"),
++            "asset_cfg": SceneEntityCfg("robot", body_names=".*foot"),
++            "contact_threshold": 1.0,
++        },
++    )
++
++    feet_contact_force_excess = RewTerm(
++        func=mdp.feet_contact_force_excess_l2,
++        weight=0.0,
++        params={
++            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*foot"),
++            "max_contact_force": 85.0,
++        },
++    )
++
++    action_smoothness_2nd = RewTerm(
++        func=mdp.action_smoothness_2nd_custom,
++        weight=0.0,
++    )
++
++
++    # --- 高度锁定与静止驻立 ---
++    # 【机身相对局部地形高度惩罚】：保证机身始终悬浮于标称高度 BASE_HEIGHT_TARGET 之上
+     base_height_relative_l2 = RewTerm(
+-        func=mdp.base_height_relative_l2,   # 局部地形
++        func=mdp.base_height_relative_l2,
+         weight=-0.5,
+         params={
+             "target_height": BASE_HEIGHT_TARGET,
+@@ -439,21 +701,25 @@ class RewardsCfg:
+             "reduction": "mean",
+         },
+     )
++
++    # 【零速指令时关节复位惩罚】：静止时不许小碎步踩踏，必须规整站立
+     stand_still_joint_deviation_l1 = RewTerm(
+         func=mdp.stand_still_joint_deviation_l1,
+         weight=-0.2,
+         params={"command_name": "base_velocity", "command_threshold": 0.06},
+     )
+ 
+-    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-5)
+-    joint_power_l1 = RewTerm(func=mdp.joint_power_l1, weight=-2.0e-5)
+-    dof_vel_l2 = RewTerm(func=mdp.joint_vel_l2, weight=0.0)
+-    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
+-    dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-1.0)
++    # --- 动力学能耗与平滑度项 ---
++    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-5)      # 关节力矩惩罚
++    joint_power_l1 = RewTerm(func=mdp.joint_power_l1, weight=-2.0e-5)        # 机械功耗惩罚 (|tau * v|)
++    dof_vel_l2 = RewTerm(func=mdp.joint_vel_l2, weight=0.0)                  # 关节角速度惩罚 (默认关闭)
++    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)              # 关节角加速度惩罚 (防高频抖动)
++    dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-1.0)          # 关节软限位超限惩罚
+ 
+-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
+-    action_smoothness_l2 = RewTerm(func=mdp.action_smoothness_2nd_custom, weight=-0.01)
++    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)           # 一阶动作指令变化率惩罚
++    action_smoothness_l2 = RewTerm(func=mdp.action_smoothness_2nd_custom, weight=-0.01)  # 二阶动作加速度平滑惩罚
+ 
++    # --- 足端步态与地形清除度备选项 (按需启用) ---
+     feet_regulation = RewTerm(
+         func=mdp.feet_regulation,
+         weight=0.0,
+@@ -499,20 +765,14 @@ class RewardsCfg:
+         weight=-0.0,
+         params={
+             "command_name": "base_velocity",
+-            "sensor_cfg": SceneEntityCfg(
+-                "contact_forces",
+-                body_names=".*_foot",
+-            ),
+-            "asset_cfg": SceneEntityCfg(
+-                "robot",
+-                body_names=".*_foot",
+-            ),
++            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot"),
++            "asset_cfg": SceneEntityCfg("robot", body_names=".*_foot"),
+             "height_sensor_cfg": SceneEntityCfg("height_scanner"),
+             "target_clearance": 0.06,
+             "contact_threshold": 5.0,
+             "top_k": 8,
+             "speed_scale": 2.0,
+-            "normalize": True,    #归一化，输出：0-1
++            "normalize": True,
+         },
+     )
+     paper_foot_clearance_l2 = RewTerm(
+@@ -535,6 +795,18 @@ class RewardsCfg:
+             "contact_threshold": 1.0,
+         },
+     )
++    # 【Trot 对角肢体对称性惩罚】：消除左右大腿/小腿不对称造成的跛行与侧漂
++    joint_diagonal_symmetry_l2 = RewTerm(
++        func=mdp.joint_diagonal_symmetry_l2,
++        weight=0.0,
++        params={"asset_cfg": SceneEntityCfg("robot")},
++    )
++    # 【四足滞空/支撑时间方差惩罚】：惩罚四腿滞空时间方差，杜绝单腿常悬偷分
++    feet_air_time_variance = RewTerm(
++        func=mdp.feet_air_time_variance_penalty,
++        weight=0.0,
++        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_foot")},
++    )
+     feet_slide = RewTerm(
+         func=mdp.feet_slide,
+         weight=0.0,
+@@ -553,25 +825,49 @@ class RewardsCfg:
+     )
+ 
+ 
++# ==============================================================================
++# 7. 回合终止条件配置 (Termination Terms)
++# ==============================================================================
+ @configclass
+ class TerminationsCfg:
+-    """Termination terms for DreamWaQ."""
++    """回合截断与摔倒判定配置。"""
+ 
++    # 【单回合最长时间截断】：达到 20.0s (1000 policy steps) 正常截断并重置
+     time_out = DoneTerm(func=mdp.time_out, time_out=True)
++
++    # 【机身触底碰撞终止】：base 刚体与地面接触力超过 1.0N 即判负终止
+     base_contact = DoneTerm(
+         func=mdp.illegal_contact,
+         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="base"), "threshold": 1.0},
+     )
+-    bad_orientation = DoneTerm(   # 跌倒重置，roll横滚/pitch俯仰  分开设置，单位：弧度
++
++    # 【机身极限倾覆姿态终止】：
++    # 【工程安全阈值】：
++    #   - 横滚角 (Roll) 超过 1.0 rad (~57.3°)
++    #   - 俯仰角 (Pitch) 超过 1.2 rad (~68.8°)
++    #   超出即判定彻底翻车，立即终止并重置，防止梯度崩塌。
++    bad_orientation = DoneTerm(
+         func=mdp.bad_roll_pitch_orientation,
+         params={"limit_roll": 1.0, "limit_pitch": 1.2},
+     )
+ 
++    # 【机身最低对地高度终止 (高度安全锁)】：
++    # 【物理机理】：机身高度低于 0.22m 时直接终止。彻底粉碎策略“趴在地上蹭地前进”的平凡欺骗解。
++    low_base_height = DoneTerm(
++        func=mdp.low_base_height,
++        params={"minimum_height": 0.22},
++    )
++
+ 
++# ==============================================================================
++# 8. 课程学习自适应配置 (Curriculum Specifications)
++# ==============================================================================
+ @configclass
+ class CurriculumCfg:
+-    """Command-first curriculum used by the Go2 DreamWaQ task."""
++    """DreamWaQ 地形难度与速度范围双重课程学习。"""
+ 
++    # 【地形等级晋级课程 (Terrain Curriculum)】：
++    # 【晋升判定】：当机器人速度跟踪进度超过 90% (0.9) 且指令速度大于 0.15m/s 时，允许晋级到更高难度地形网格。
+     terrain_levels = CurrTerm(
+         func=mdp.terrain_levels_vel_new,
+         params={
+@@ -580,6 +876,9 @@ class CurriculumCfg:
+             "min_command_progress_for_terrain": 0.9,
+         },
+     )
++
++    # 【指令速度范围自适应扩充课程 (Command Range Expansion)】：
++    # 【扩展判定】：当跟踪奖励超过 0.8 时，逐步将采样范围扩充 step_size (0.01)，直到达到极限上限 limit_ranges。
+     command_ranges = CurrTerm(
+         func=mdp.modify_command_ranges_on_tracking_reward,
+         params={
+@@ -595,9 +894,18 @@ class CurriculumCfg:
+     )
+ 
+ 
++# ==============================================================================
++# 9. 顶级环境基类组装 (Base Environment Configuration Class)
++# ==============================================================================
+ @configclass
+ class UnitreeGo2DreamWaQBaseEnvCfg(ManagerBasedRLEnvCfg):
+-    """Base Go2 DreamWaQ environment assembled from independent cfg groups."""
++    """Go2 DreamWaQ 顶级环境基类。
++
++    【时间离散化与频率】：
++    - 物理引擎仿真步长 (sim.dt): 0.005s (200Hz 物理求解器)
++    - 策略抽取抽取率 (decimation): 4
++    - 强化学习控制步长: 4 * 0.005s = 0.02s (50Hz 控制环，与实机 CAN 总线主流刷新率严格匹配)
++    """
+ 
+     scene: UnitreeGo2DreamWaQSceneCfg = UnitreeGo2DreamWaQSceneCfg(
+         num_envs=4096,
+@@ -619,11 +927,13 @@ class UnitreeGo2DreamWaQBaseEnvCfg(ManagerBasedRLEnvCfg):
+         self.sim.physics_material = self.scene.terrain.physics_material
+         self.sim.physx.gpu_max_rigid_patch_count = 10 * 2**15
+ 
++        # 传感器采样周期对齐
+         if self.scene.height_scanner is not None:
+-            self.scene.height_scanner.update_period = self.decimation * self.sim.dt
++            self.scene.height_scanner.update_period = self.decimation * self.sim.dt  # 50Hz 更新
+         if self.scene.contact_forces is not None:
+-            self.scene.contact_forces.update_period = self.sim.dt
++            self.scene.contact_forces.update_period = self.sim.dt                    # 200Hz 触地监测
+ 
++        # 课程生成器联动
+         if getattr(self.curriculum, "terrain_levels", None) is not None:
+             if self.scene.terrain.terrain_generator is not None:
+                 self.scene.terrain.terrain_generator.curriculum = True
+diff --git a/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/mdp/rewards.py b/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/mdp/rewards.py
+index aeeba6e..005968f 100644
+--- a/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/mdp/rewards.py
++++ b/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/mdp/rewards.py
+@@ -18,7 +18,7 @@ import torch
+ from isaaclab.envs import mdp
+ from isaaclab.managers import SceneEntityCfg
+ from isaaclab.sensors import ContactSensor, RayCaster
+-from isaaclab.utils.math import quat_apply_inverse, quat_apply_yaw, quat_conjugate, quat_from_euler_xyz, yaw_quat
++from isaaclab.utils.math import quat_apply_inverse, quat_apply_yaw, quat_conjugate, quat_from_euler_xyz, yaw_quat, wrap_to_pi
+ 
+ if TYPE_CHECKING:
+     from isaaclab.envs import ManagerBasedRLEnv
+@@ -1472,3 +1472,705 @@ def action_smoothness_2nd_custom(env: ManagerBasedRLEnv) -> torch.Tensor:
+ #     reward *= moving.float()
+ 
+ #     return reward
++
++
++def joint_diagonal_symmetry_l2(
++    env: ManagerBasedRLEnv,
++    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
++) -> torch.Tensor:
++    """Trot 对角肢体对称性惩罚 (Diagonal Gait Symmetry Penalty)。
++
++    在黄金 Trot 小跑中，对角腿对 [FL+RR] 与 [FR+RL] 必须处于完全一致的运动学相位。
++    此项直接惩罚对角大腿 (thigh) 与小腿 (calf) 之间的瞬时角度差平方和：
++      (FL_thigh - RR_thigh)^2 + (FR_thigh - RL_thigh)^2 + (FL_calf - RR_calf)^2 + (FR_calf - RL_calf)^2
++    彻底扼杀单侧深蹲、对角不同步引发的长短腿跛行与斜向侧漂。
++    """
++    asset = env.scene[asset_cfg.name]
++    j_pos = asset.data.joint_pos  # shape: (num_envs, 12)
++    # 关节索引映射:
++    # 0: FL_hip,   1: FR_hip,   2: RL_hip,   3: RR_hip
++    # 4: FL_thigh, 5: FR_thigh, 6: RL_thigh, 7: RR_thigh
++    # 8: FL_calf,  9: FR_calf, 10: RL_calf, 11: RR_calf
++    diff_thigh_1 = torch.square(j_pos[:, 4] - j_pos[:, 7])  # FL_thigh - RR_thigh
++    diff_thigh_2 = torch.square(j_pos[:, 5] - j_pos[:, 6])  # FR_thigh - RL_thigh
++    diff_calf_1 = torch.square(j_pos[:, 8] - j_pos[:, 11])  # FL_calf - RR_calf
++    diff_calf_2 = torch.square(j_pos[:, 9] - j_pos[:, 10])  # FR_calf - RL_calf
++    diff_hip_1 = torch.square(j_pos[:, 0] + j_pos[:, 1])    # FL_hip + FR_hip 左右镜像展收
++    diff_hip_2 = torch.square(j_pos[:, 2] + j_pos[:, 3])    # RL_hip + RR_hip 左右镜像展收
++    
++    total_diff = diff_thigh_1 + diff_thigh_2 + diff_calf_1 + diff_calf_2 + 0.5 * (diff_hip_1 + diff_hip_2)
++    return total_diff
++
++
++def feet_air_time_variance_penalty(
++    env: ManagerBasedRLEnv,
++    sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["FL_foot", "FR_foot", "RL_foot", "RR_foot"]),
++) -> torch.Tensor:
++    """四足滞空/支撑时间方差惩罚 (Feet Air-Time Variance Penalty)。
++
++    惩罚四条腿在摆动相滞空时间 (last_air_time) 与支撑相接触时间 (last_contact_time) 的方差。
++    强制四条腿的步幅、节奏和蹬地时长保持严格等长对称，杜绝任何单腿常悬或单侧拖地。
++    """
++    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
++    last_air_time = contact_sensor.data.last_air_time[:, sensor_cfg.body_ids]
++    last_contact_time = contact_sensor.data.last_contact_time[:, sensor_cfg.body_ids]
++    reward = torch.var(torch.clip(last_air_time, max=0.5), dim=1) + torch.var(
++        torch.clip(last_contact_time, max=0.5), dim=1
++    )
++    return reward
++
++
++def hip_pos_deviation_l1(
++    env: ManagerBasedRLEnv,
++    command_name: str = "base_velocity",
++    command_threshold: float = 0.1,
++    yaw_threshold: float = 0.2,
++    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=[".*_hip_joint"]),
++) -> torch.Tensor:
++    """WaxberryS exact hip position lock: penalize hip joint deviation when lateral |vy| and yaw |wz| are below thresholds."""
++    asset = env.scene[asset_cfg.name]
++    command = env.command_manager.get_command(command_name)
++    flag = (
++        (torch.abs(command[:, 1]) < float(command_threshold))
++        & (torch.abs(command[:, 2]) < float(yaw_threshold))
++    ).float()
++    hip_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
++    return flag * torch.sum(torch.abs(hip_pos), dim=1)
++
++
++def swing_hip_abduction_l2(
++    env: ManagerBasedRLEnv,
++    command_name: str = "base_velocity",
++    command_threshold: float = 0.08,
++    yaw_threshold: float = 0.15,
++    contact_threshold: float = 1.0,
++    contact_sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=["FL_foot", "FR_foot", "RL_foot", "RR_foot"]),
++    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=[".*_hip_joint"]),
++) -> torch.Tensor:
++    """靶向惩罚摆动相（Swing Phase）大角度向外画弧外甩（Circumduction Gait）。
++
++    【动力学与全向解耦原理】：
++    1. 动态门控（Command Gate）：当用户下达侧移 (|vy| >= 0.08) 或 原地自转 (|wz| >= 0.15) 指令时，
++       门控值立即清零，100% 释放髋关节外展自由度，保证斜爬台阶与原地自转畅通无阻；
++    2. 摆动相隔离（Swing Phase Isolation）：仅对腾空离地（contact force < contact_threshold）的腿生效；
++       支撑踩地相完全不受任何约束；
++    3. 纯单向外展惩罚（Unilateral Outward Abduction Penalty）：
++       只惩罚超出标称位姿的【向外画弧外撇】（左腿 > +0.1 rad, 右腿 < -0.1 rad），
++       不惩罚正常范围内的对齐运动，彻底逼迫摆动相把抬腿动作转移到矢状面的正向深屈膝高抬腿。
++    """
++    command = env.command_manager.get_command(command_name)
++    gate = (
++        (torch.abs(command[:, 1]) < float(command_threshold))
++        & (torch.abs(command[:, 2]) < float(yaw_threshold))
++    ).float()
++
++    contact_sensor: ContactSensor = env.scene.sensors[contact_sensor_cfg.name]
++    in_contact = _contact_states(contact_sensor, contact_sensor_cfg.body_ids, contact_threshold)  # [N, 4]
++    is_swing = (~in_contact).float()  # [N, 4]
++
++    asset = env.scene[asset_cfg.name]
++    # hip joints order: [FL_hip, FR_hip, RL_hip, RR_hip]
++    hip_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]  # [N, 4]
++    default_hip = asset.data.default_joint_pos[:, asset_cfg.joint_ids]  # [N, 4]
++
++    # FL (idx 0, left), FR (idx 1, right), RL (idx 2, left), RR (idx 3, right)
++    side_signs = torch.tensor([1.0, -1.0, 1.0, -1.0], device=env.device).unsqueeze(0)
++    outward_deviation = torch.clamp((hip_pos - default_hip) * side_signs, min=0.0)  # [N, 4]
++
++    swing_abduction_penalty = torch.sum(torch.square(outward_deviation) * is_swing, dim=1)  # [N]
++    return gate * swing_abduction_penalty
++
++
++def full_hip_swing_symmetry_l2(
++    env: ManagerBasedRLEnv,
++    command_name: str = "base_velocity",
++    command_threshold: float = 0.08,
++    yaw_threshold: float = 0.15,
++    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=[".*_hip_joint"]),
++) -> torch.Tensor:
++    """四肢前后全镜像对称外展约束：同时惩罚前肢对与后肢对髋关节外展幅度的非对称差，彻底消除任何单腿特立独行外甩。"""
++    command = env.command_manager.get_command(command_name)
++    gate = (
++        (torch.abs(command[:, 1]) < float(command_threshold))
++        & (torch.abs(command[:, 2]) < float(yaw_threshold))
++    ).float()
++
++    asset = env.scene[asset_cfg.name]
++    hip_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]  # [N, 4]: FL, FR, RL, RR
++    default_hip = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
++
++    # FL (idx 0, left), FR (idx 1, right)
++    fl_outward = torch.clamp(hip_pos[:, 0] - default_hip[:, 0], min=0.0)
++    fr_outward = torch.clamp(-(hip_pos[:, 1] - default_hip[:, 1]), min=0.0)
++    front_diff = torch.square(fl_outward - fr_outward)
++
++    # RL (idx 2, left), RR (idx 3, right)
++    rl_outward = torch.clamp(hip_pos[:, 2] - default_hip[:, 2], min=0.0)
++    rr_outward = torch.clamp(-(hip_pos[:, 3] - default_hip[:, 3]), min=0.0)
++    rear_diff = torch.square(rl_outward - rr_outward)
++
++    return gate * (front_diff + rear_diff)
++
++
++def rear_hip_swing_symmetry_l2(
++    env: ManagerBasedRLEnv,
++    command_name: str = "base_velocity",
++    command_threshold: float = 0.08,
++    yaw_threshold: float = 0.15,
++    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=[".*_hip_joint"]),
++) -> torch.Tensor:
++    """向后兼容别名：直接调用 full_hip_swing_symmetry_l2 实现四肢全对称。"""
++    return full_hip_swing_symmetry_l2(env, command_name, command_threshold, yaw_threshold, asset_cfg)
++
++
++def flat_heading_error_l2(
++    env: ManagerBasedRLEnv,
++    command_name: str = "base_velocity",
++    yaw_threshold: float = 0.15,
++    target_heading_rad: float = 0.0,
++    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
++) -> torch.Tensor:
++    """惩罚平地运动时的绝对偏航角偏差 (wrap_to_pi(yaw - target_yaw)^2)。
++    当要求直行或全向平移 (|wz| < yaw_threshold) 时施加航向死锁；
++    当指令要求自转或动态转弯 (|wz| >= yaw_threshold) 时动态门控清零，彻底释放自转自由度。
++    """
++    command = env.command_manager.get_command(command_name)
++    gate = (torch.abs(command[:, 2]) < float(yaw_threshold)).float()
++    asset = env.scene[asset_cfg.name]
++    heading = asset.data.heading_w
++    if command.shape[1] > 3:
++        target = command[:, 3]
++    else:
++        target = torch.full_like(heading, float(target_heading_rad))
++    heading_err = wrap_to_pi(heading - target)
++    return gate * torch.square(heading_err)
++
++
++def roll_orientation_l2(
++    env: ManagerBasedRLEnv,
++    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
++) -> torch.Tensor:
++    """姿态精准解耦惩罚：只惩罚机身横滚角偏差 (Roll)，彻底释放俯仰角 (Pitch)。
++
++    物理机理：
++    - projected_gravity_b[:, 1] = gy = -sin(roll) * cos(pitch)
++    - 当机身端正无侧倾时，gy = 0，惩罚为 0；
++    - 当机身左右倾斜摇摆时，惩罚 gy^2，强力锁定身姿端正不侧晃；
++    - 完全不惩罚 gx (Pitch)，机器狗顺应 15°~25° 台阶仰角爬坡完全免除惩罚！
++    """
++    asset = env.scene[asset_cfg.name]
++    return torch.square(asset.data.projected_gravity_b[:, 1])
++
++
++def pitch_adaptive_foot_clearance_l1(
++    env: ManagerBasedRLEnv,
++    command_name: str,
++    sensor_cfg: SceneEntityCfg,
++    asset_cfg: SceneEntityCfg,
++    height_sensor_cfg: SceneEntityCfg,
++    flat_target_clearance: float = 0.04,
++    stairs_target_clearance: float = 0.16,
++    target_clearance: float = 0.04,
++    contact_threshold: float = 1.0,
++    top_k: int = 8,
++    speed_scale: float = 2.0,
++    normalize: bool = True,
++) -> torch.Tensor:
++    """俯仰自适应单边足端净空惩罚 (Pitch-Adaptive Foot Clearance Penalty).
++
++    物理机理：
++    - 平地行走 (|pitch| < 3°): 自动将目标净空门限压低至 flat_target_clearance (0.04m)，
++      步态紧凑轻盈，彻底杜绝高抬腿跺地产生的高频地面冲击反力与机身颠簸；
++    - 台阶翻越 (pitch > 6°): 当机身仰起攀爬台阶时，自适应扩大门限至 stairs_target_clearance (0.16m)，
++      强力引导深屈膝高提膝跨步，杜绝踢阶蹭阶卡死。
++    """
++    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
++    height_sensor: RayCaster = env.scene.sensors[height_sensor_cfg.name]
++    asset = env.scene[asset_cfg.name]
++
++    # 使用当前接触力识别摆动相
++    contact_forces = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids, :]
++    in_contact = torch.norm(contact_forces, dim=-1) > contact_threshold
++    swing_feet = ~in_contact
++
++    foot_pos_w = asset.data.body_pos_w[:, asset_cfg.body_ids, :]
++    foot_heights = foot_pos_w[..., 2]
++
++    # 足端局部坐标转换
++    sensor_pos_w = height_sensor.data.pos_w
++    sensor_yaw_quat_w = yaw_quat(height_sensor.data.quat_w)
++
++    foot_pos_rel_w = foot_pos_w - sensor_pos_w.unsqueeze(1)
++    foot_pos_sensor = quat_apply_inverse(
++        sensor_yaw_quat_w.unsqueeze(1)
++        .expand(-1, foot_pos_rel_w.shape[1], -1)
++        .reshape(-1, 4),
++        foot_pos_rel_w.reshape(-1, 3),
++    ).reshape_as(foot_pos_rel_w)
++
++    foot_xy_sensor = foot_pos_sensor[..., :2]
++
++    ray_xy_sensor = height_sensor.ray_starts[..., :2]
++    if ray_xy_sensor.dim() == 2:
++        ray_xy_sensor = ray_xy_sensor.unsqueeze(0).expand(
++            env.num_envs, -1, -1
++        )
++
++    ray_hit_heights = height_sensor.data.ray_hits_w[..., 2]
++    valid_rays = torch.isfinite(ray_hit_heights)
++
++    foot_to_ray_dist = torch.cdist(foot_xy_sensor, ray_xy_sensor)
++    foot_to_ray_dist = torch.where(
++        valid_rays.unsqueeze(1),
++        foot_to_ray_dist,
++        torch.full_like(foot_to_ray_dist, float("inf")),
++    )
++
++    top_k = min(top_k, foot_to_ray_dist.shape[-1])
++    nearest_ids = torch.topk(
++        foot_to_ray_dist,
++        k=top_k,
++        dim=-1,
++        largest=False,
++    ).indices
++    expanded_heights = ray_hit_heights.unsqueeze(1).expand(
++        -1, foot_heights.shape[1], -1
++    )
++    local_heights = torch.gather(
++        expanded_heights,
++        dim=2,
++        index=nearest_ids,
++    )
++    valid_local = torch.isfinite(local_heights)
++    local_heights_safe = torch.where(
++        valid_local,
++        local_heights,
++        torch.full_like(local_heights, -float("inf")),
++    )
++    nearby_terrain_height = torch.max(
++        local_heights_safe,
++        dim=2,
++    ).values
++    has_valid_local = valid_local.any(dim=2)
++
++    # 动态根据机身俯仰角计算目标净空
++    # asset.data.projected_gravity_b[:, 0] = -sin(pitch)
++    pitch_up = -asset.data.projected_gravity_b[:, 0]  # shape: (num_envs,)
++    # 当 pitch_up <= 0.05 (~3°) 时 alpha = 0.0; 当 pitch_up >= 0.20 (~11.5°) 时 alpha = 1.0
++    alpha = torch.clamp((pitch_up - 0.05) / 0.15, min=0.0, max=1.0).unsqueeze(1)  # (num_envs, 1)
++    target_clearance = flat_target_clearance + alpha * (stairs_target_clearance - flat_target_clearance)  # (num_envs, 1)
++
++    nearby_terrain_height = torch.where(
++        has_valid_local,
++        nearby_terrain_height,
++        foot_heights - target_clearance,
++    )
++
++    clearance = foot_heights - nearby_terrain_height
++    # 只惩罚离地间隙不足
++    clearance_shortfall = torch.clamp(
++        target_clearance - clearance,
++        min=0.0,
++    )
++    clearance_error = torch.clamp(clearance_shortfall, max=float(stairs_target_clearance))
++
++    foot_speed_xy = torch.norm(
++        asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2],
++        dim=-1,
++    )
++    speed_weight = torch.tanh(speed_scale * foot_speed_xy)
++    swing_count = swing_feet.sum(dim=1).clamp(min=1)
++    penalty = torch.sum(
++        clearance_error
++        * speed_weight
++        * swing_feet,
++        dim=1,
++    ) / swing_count
++    command = env.command_manager.get_command(command_name)
++    moving = (
++        (torch.norm(command[:, :2], dim=1) > 0.1)
++        | (torch.abs(command[:, 2]) > 0.1)
++    )
++
++    return penalty * moving
++
++
++def feet_contact_velocity_z_l2(
++    env: ManagerBasedRLEnv,
++    sensor_cfg: SceneEntityCfg,
++    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
++    contact_threshold: float = 1.0,
++) -> torch.Tensor:
++    """足端接地瞬间垂直撞击速度软着陆阻尼惩罚 (Foot Soft Landing Damping Penalty).
++
++    物理机理：
++    - 当足端触地 (接触力 > contact_threshold) 时，惩罚足端在世界坐标系下的垂直速度平方 (v_{z}^2)；
++    - 迫使策略网络在摆动相即将着地的一瞬主动缓速收腿 (Retraction velocity matching: \dot{z} -> 0)，
++      消除高抬腿重砸地面产生的瞬态冲击（GRF Impact Spike）；
++    - 从而将平地机身质心的垂直抖动彻底压入 < 10mm 黄金线以内。
++    """
++    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
++    force_history = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :]
++    contacts = force_history.norm(dim=-1).max(dim=1)[0] > float(contact_threshold)
++
++    asset = env.scene[asset_cfg.name]
++    foot_vz = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, 2]
++
++    landing_impact = torch.square(foot_vz) * contacts.float()
++    return torch.sum(landing_impact, dim=1)
++
++
++def feet_contact_force_excess_l2(
++    env: ManagerBasedRLEnv,
++    sensor_cfg: SceneEntityCfg,
++    max_contact_force: float = 85.0,
++) -> torch.Tensor:
++    """足端地面接触力超限软化缓冲惩罚 (Compliant Ground Contact Force Cushioning).
++
++    物理机理：
++    - Go2 机器狗自重 15kg，在对角 Trot 对称支撑下，每只单腿的名义承重约为 75N；
++    - 超过 85N 的尖峰力矩代表猛烈剁地冲击，惩罚超额接触力矩的平方；
++    - 激励膝关节与踝部在接地后产生柔顺屈伸缓冲（Compliant Cushioning），吸收冲击动能。
++    """
++    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
++    forces = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0]
++    excess = torch.clamp(forces - float(max_contact_force), min=0.0)
++    return torch.sum(torch.square(excess), dim=1)
++
++
++def terrain_adaptive_pitch_orientation_l2(
++    env: ManagerBasedRLEnv,
++    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
++    stairs_pitch_threshold: float = 0.08,
++) -> torch.Tensor:
++    """解耦平地俯仰刚性锁定惩罚 (Decoupled Flat Pitch Rigidity Lock).
++
++    物理机理：
++    - asset.data.projected_gravity_b[:, 0] = gx = -sin(pitch)
++    - 在平地或小角度行走时 (|gx| < stairs_pitch_threshold, 即 |pitch| < ~4.6°)，gate -> 1.0，
++      强力施加 gx^2 惩罚，迫使机身严格保持水平 (pitch 压至 <= 1.5°)，根除跷跷板点头颠簸；
++    - 当机器狗遭遇台阶、机身主动仰起攀爬时 (pitch > stairs_pitch_threshold)，
++      gate 平滑衰减至 0.0，彻底解除俯仰锁，释放爬阶自由度，严格遵循红线 W4。
++    """
++    asset = env.scene[asset_cfg.name]
++    gx = asset.data.projected_gravity_b[:, 0]
++    pitch_up = -gx
++    # 当 pitch_up <= 0.05 (~3°) 时 gate = 1.0; 当 pitch_up >= 0.12 (~7°) 时 gate = 0.0
++    gate = torch.clamp((0.12 - pitch_up) / 0.07, min=0.0, max=1.0)
++    return gate * torch.square(gx)
++
++
++def dual_bounded_pitch_adaptive_foot_clearance_l1(
++    env: ManagerBasedRLEnv,
++    command_name: str,
++    sensor_cfg: SceneEntityCfg,
++    asset_cfg: SceneEntityCfg,
++    height_sensor_cfg: SceneEntityCfg,
++    flat_target_clearance: float = 0.022,
++    flat_max_clearance: float = 0.028,
++    stairs_target_clearance: float = 0.16,
++    target_clearance: float = 0.04,
++    excess_penalty_scale: float = 3.0,
++    contact_threshold: float = 1.0,
++    top_k: int = 8,
++    speed_scale: float = 2.0,
++    normalize: bool = True,
++) -> torch.Tensor:
++    """双向限幅俯仰自适应足端净空惩罚 (Dual-Bounded Pitch-Adaptive Foot Clearance).
++
++    物理机理：
++    1. 平地行走 (alpha -> 0): 
++       - 下限约束：离地间隙不足 flat_target_clearance (0.022m) 时产生 shortfall 惩罚（防绊腿拖地）；
++       - 上限约束：离地间隙超过 flat_max_clearance (0.028m) 时处以 excess_penalty_scale (3.0x) 超额惩罚！
++         严厉斩断平地 35mm 高抬腿大跨步恶习，把平地步态强行按死在 10~25mm 磁悬浮滑行区间，彻底消除跺地撞击！
++    2. 台阶翻越 (alpha -> 1):
++       - 超额惩罚系数随 (1.0 - alpha) 彻底归零，允许并激励深屈膝高提膝 (达到 0.16m)，100% 翻越连续高台阶。
++    """
++    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
++    height_sensor: RayCaster = env.scene.sensors[height_sensor_cfg.name]
++    asset = env.scene[asset_cfg.name]
++
++    contact_forces = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids, :]
++    in_contact = torch.norm(contact_forces, dim=-1) > contact_threshold
++    swing_feet = ~in_contact
++
++    foot_pos_w = asset.data.body_pos_w[:, asset_cfg.body_ids, :]
++    foot_heights = foot_pos_w[..., 2]
++
++    sensor_pos_w = height_sensor.data.pos_w
++    sensor_yaw_quat_w = yaw_quat(height_sensor.data.quat_w)
++
++    foot_pos_rel_w = foot_pos_w - sensor_pos_w.unsqueeze(1)
++    foot_pos_sensor = quat_apply_inverse(
++        sensor_yaw_quat_w.unsqueeze(1)
++        .expand(-1, foot_pos_rel_w.shape[1], -1)
++        .reshape(-1, 4),
++        foot_pos_rel_w.reshape(-1, 3),
++    ).reshape_as(foot_pos_rel_w)
++
++    foot_xy_sensor = foot_pos_sensor[..., :2]
++
++    ray_xy_sensor = height_sensor.ray_starts[..., :2]
++    if ray_xy_sensor.dim() == 2:
++        ray_xy_sensor = ray_xy_sensor.unsqueeze(0).expand(
++            env.num_envs, -1, -1
++        )
++
++    ray_hit_heights = height_sensor.data.ray_hits_w[..., 2]
++    valid_rays = torch.isfinite(ray_hit_heights)
++
++    foot_to_ray_dist = torch.cdist(foot_xy_sensor, ray_xy_sensor)
++    foot_to_ray_dist = torch.where(
++        valid_rays.unsqueeze(1),
++        foot_to_ray_dist,
++        torch.full_like(foot_to_ray_dist, float("inf")),
++    )
++
++    top_k = min(top_k, foot_to_ray_dist.shape[-1])
++    nearest_ids = torch.topk(
++        foot_to_ray_dist,
++        k=top_k,
++        dim=-1,
++        largest=False,
++    ).indices
++    expanded_heights = ray_hit_heights.unsqueeze(1).expand(
++        -1, foot_heights.shape[1], -1
++    )
++    local_heights = torch.gather(
++        expanded_heights,
++        dim=2,
++        index=nearest_ids,
++    )
++    valid_local = torch.isfinite(local_heights)
++    local_heights_safe = torch.where(
++        valid_local,
++        local_heights,
++        torch.full_like(local_heights, -float("inf")),
++    )
++    nearby_terrain_height = torch.max(
++        local_heights_safe,
++        dim=2,
++    ).values
++    has_valid_local = valid_local.any(dim=2)
++
++    cur_ground_height = torch.where(
++        has_valid_local,
++        nearby_terrain_height,
++        foot_heights - flat_target_clearance,
++    )
++
++    pitch_up = -asset.data.projected_gravity_b[:, 0]
++    alpha_pitch = torch.clamp((pitch_up - 0.03) / 0.12, min=0.0, max=1.0).unsqueeze(1)
++    # 结合扫描仪局部地形落差：若全图存在台阶高差 (span > 4cm)，作为宏观环境特征
++    safe_ray_hits_max = torch.where(valid_rays, ray_hit_heights, torch.full_like(ray_hit_heights, -1e4)).max(dim=-1).values
++    safe_ray_hits_min = torch.where(valid_rays, ray_hit_heights, torch.full_like(ray_hit_heights, 1e4)).min(dim=-1).values
++    has_any_valid_rays = valid_rays.any(dim=-1)
++    span_terrain = torch.where(has_any_valid_rays, safe_ray_hits_max - safe_ray_hits_min, torch.zeros_like(safe_ray_hits_max)).clamp(min=0.0)
++    alpha_terrain = torch.clamp((span_terrain - 0.04) / 0.06, min=0.0, max=1.0).unsqueeze(1)
++
++    # --- 核心手术：0.3 秒前瞻自适应提膝激活 (提前感知前方直角立面) ---
++    # 机身速度 0.6~1.0m/s 时，0.3s 行程对应足端前方 dx in [0.05, 0.40]m，横向宽度 dy in [-0.15, 0.15]m
++    ray_x = ray_xy_sensor[:, :, 0].unsqueeze(1)  # [num_envs, 1, num_rays]
++    ray_y = ray_xy_sensor[:, :, 1].unsqueeze(1)  # [num_envs, 1, num_rays]
++    foot_x = foot_xy_sensor[:, :, 0].unsqueeze(2)  # [num_envs, 4, 1]
++    foot_y = foot_xy_sensor[:, :, 1].unsqueeze(2)  # [num_envs, 4, 1]
++
++    dx_ahead = ray_x - foot_x  # [num_envs, 4, num_rays]
++    dy_ahead = ray_y - foot_y  # [num_envs, 4, num_rays]
++
++    ahead_mask = (
++        (dx_ahead >= 0.05)
++        & (dx_ahead <= 0.40)
++        & (torch.abs(dy_ahead) <= 0.15)
++        & valid_rays.unsqueeze(1)
++    )  # [num_envs, 4, num_rays]
++
++    ahead_heights_safe = torch.where(
++        ahead_mask,
++        expanded_heights,
++        torch.full_like(expanded_heights, -1e4),
++    )
++    ahead_max_height = torch.max(ahead_heights_safe, dim=-1).values  # [num_envs, 4]
++    has_valid_ahead = ahead_mask.any(dim=-1)  # [num_envs, 4]
++
++    # 前方台阶落差：ahead 地形最大高度 - 当前脚底地面高度
++    delta_z_ahead = torch.where(
++        has_valid_ahead,
++        ahead_max_height - cur_ground_height,
++        torch.zeros_like(cur_ground_height),
++    ).clamp(min=0.0)
++
++    # 提前 0.3 秒前瞻激活门控：当落差超过 4cm (如 10~16cm 台阶) 时，alpha_ahead 迅速拉满至 1.0
++    alpha_ahead = torch.clamp((delta_z_ahead - 0.04) / 0.06, min=0.0, max=1.0)  # [num_envs, 4]
++
++    # 综合激活度：前瞻感知 + 机身俯仰 + 宏观地形落差三位一体
++    alpha = torch.maximum(torch.maximum(alpha_pitch, alpha_terrain), alpha_ahead)  # [num_envs, 4]
++    target_clearance = flat_target_clearance + alpha * (stairs_target_clearance - flat_target_clearance)
++
++    nearby_terrain_height = torch.where(
++        has_valid_local,
++        nearby_terrain_height,
++        foot_heights - target_clearance,
++    )
++
++    clearance = foot_heights - nearby_terrain_height
++    # 1. 离地间隙不足惩罚（增加下降触地保护门控 Landing Gate，消灭落脚死锁）
++    # 当摆动足处于向下降落准备触地阶段时 (foot_vel_z < 0)，离地间隙自然归零，不应遭受 shortfall 惩罚；
++    # 只有在抬腿上升/前进腾空阶段 (foot_vel_z >= 0)，才强制要求达到目标离地高度。
++    foot_vel_z = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, 2]
++    landing_gate = torch.clamp((foot_vel_z + 0.15) / 0.20, min=0.0, max=1.0)
++    effective_landing_gate = (1.0 - alpha) * 1.0 + alpha * landing_gate
++
++    clearance_shortfall = effective_landing_gate * torch.clamp(
++        target_clearance - clearance,
++        min=0.0,
++    )
++    # 2. 平地超额抬腿严惩 (彻底斩断跺地冲击)
++    flat_excess = torch.clamp(clearance - float(flat_max_clearance), min=0.0)
++    flat_excess_penalty = (1.0 - alpha) * flat_excess * float(excess_penalty_scale)
++
++    clearance_error = torch.clamp(clearance_shortfall + flat_excess_penalty, max=float(stairs_target_clearance))
++
++    foot_speed_xy = torch.norm(
++        asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2],
++        dim=-1,
++    )
++    speed_weight = torch.tanh(speed_scale * foot_speed_xy)
++    swing_count = swing_feet.sum(dim=1).clamp(min=1)
++    penalty = torch.sum(
++        clearance_error
++        * speed_weight
++        * swing_feet,
++        dim=1,
++    ) / swing_count
++    command = env.command_manager.get_command(command_name)
++    moving = (
++        (torch.norm(command[:, :2], dim=1) > 0.1)
++        | (torch.abs(command[:, 2]) > 0.1)
++    )
++
++    return penalty * moving
++
++
++def bilateral_hip_symmetry_equivariance_l2(
++    env: ManagerBasedRLEnv,
++    command_name: str = "base_velocity",
++    command_threshold: float = 0.08,
++    yaw_threshold: float = 0.15,
++    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=[".*_hip_joint"]),
++) -> torch.Tensor:
++    """双向全域等变镜像对称约束 (无任何单边截断)：
++    左右前腿与左右后腿髋关节偏差必须完全镜像相反：
++    (q_FL - q_nom_FL) + (q_FR - q_nom_FR) == 0
++    (q_RL - q_nom_RL) + (q_RR - q_nom_RR) == 0
++    完全剔除 min=0.0 单边截断后门，无论是外甩还是内扣，只要左右不对称一律严惩！
++    """
++    command = env.command_manager.get_command(command_name)
++    gate = (
++        (torch.abs(command[:, 1]) < float(command_threshold))
++        & (torch.abs(command[:, 2]) < float(yaw_threshold))
++    ).float()
++
++    asset = env.scene[asset_cfg.name]
++    hip_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
++    default_hip = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
++
++    front_mirror_err = (hip_pos[:, 0] - default_hip[:, 0]) + (hip_pos[:, 1] - default_hip[:, 1])
++    rear_mirror_err = (hip_pos[:, 2] - default_hip[:, 2]) + (hip_pos[:, 3] - default_hip[:, 3])
++
++    return gate * (torch.square(front_mirror_err) + torch.square(rear_mirror_err))
++
++
++def front_hip_neutral_pos_l2(
++    env: ManagerBasedRLEnv,
++    command_name: str = "base_velocity",
++    command_threshold: float = 0.08,
++    yaw_threshold: float = 0.15,
++    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=[".*_hip_joint"]),
++) -> torch.Tensor:
++    """前腿髋关节双向中立零位锁：惩罚前肢偏离名义基准（无论是内扣还是外展），彻底将左前内扣拉直。"""
++    command = env.command_manager.get_command(command_name)
++    gate = (
++        (torch.abs(command[:, 1]) < float(command_threshold))
++        & (torch.abs(command[:, 2]) < float(yaw_threshold))
++    ).float()
++
++    asset = env.scene[asset_cfg.name]
++    hip_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
++    default_hip = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
++
++    fl_dev = hip_pos[:, 0] - default_hip[:, 0]
++    fr_dev = hip_pos[:, 1] - default_hip[:, 1]
++
++    return gate * (torch.square(fl_dev) + torch.square(fr_dev))
++
++
++def power_distribution_variance_l2(
++    env: ManagerBasedRLEnv,
++    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
++) -> torch.Tensor:
++    """四肢功率方差惩罚：强制四腿机械功率对称均衡分配，杜绝单腿内扣偷懒或单侧负荷过载。"""
++    asset = env.scene[asset_cfg.name]
++    qvel = asset.data.joint_vel
++    qfrc = asset.data.applied_torque
++    power = torch.abs(qvel * qfrc)
++    return torch.var(power, dim=-1)
++
++
++def straight_ang_vel_z_l2(
++    env: ManagerBasedRLEnv,
++    command_name: str = "base_velocity",
++    yaw_threshold: float = 0.10,
++    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
++) -> torch.Tensor:
++    """平地直行偏航角速度刚性锁：在直行指令下 (|wz| < 0.10) 严惩任何偏航晃动，彻底锁死直线。"""
++    command = env.command_manager.get_command(command_name)
++    gate = (torch.abs(command[:, 2]) < float(yaw_threshold)).float()
++    asset = env.scene[asset_cfg.name]
++    ang_vel_z = asset.data.root_ang_vel_b[:, 2]
++    return gate * torch.square(ang_vel_z)
++
++
++def soft_contact_velocity_damping_l2(
++    env: ManagerBasedRLEnv,
++    sensor_cfg: SceneEntityCfg,
++    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
++    contact_force_threshold: float = 2.0,
++) -> torch.Tensor:
++    """连续接触速度阻尼：只惩罚高速粗暴撞阶，允许低速贴阶滑行，消灭碰阶回缩假死与卡顿。"""
++    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
++    forces = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids, :]
++    force_norm = torch.norm(forces, dim=-1)
++    in_contact = force_norm > float(contact_force_threshold)
++
++    asset = env.scene[asset_cfg.name]
++    body_vel = asset.data.body_lin_vel_w[:, sensor_cfg.body_ids, :]
++    vel_sq = torch.sum(torch.square(body_vel), dim=-1)
++
++    return torch.sum(in_contact.float() * vel_sq, dim=-1)
++
++
++def rear_hip_neutral_pos_l2(
++    env: ManagerBasedRLEnv,
++    command_name: str = "base_velocity",
++    command_threshold: float = 0.08,
++    yaw_threshold: float = 0.15,
++    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=[".*_hip_joint"]),
++) -> torch.Tensor:
++    """后腿髋关节双向中立零位锁：惩罚后肢髋角偏离名义基准，消灭后驱单侧偏向。"""
++    command = env.command_manager.get_command(command_name)
++    gate = (
++        (torch.abs(command[:, 1]) < float(command_threshold))
++        & (torch.abs(command[:, 2]) < float(yaw_threshold))
++    ).float()
++
++    asset = env.scene[asset_cfg.name]
++    hip_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
++    default_hip = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
++
++    rl_dev = hip_pos[:, 2] - default_hip[:, 2]
++    rr_dev = hip_pos[:, 3] - default_hip[:, 3]
++
++    return gate * (torch.square(rl_dev) + torch.square(rr_dev))
++
++
+diff --git a/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/mdp/terminations.py b/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/mdp/terminations.py
+index 099b03b..b5636d0 100644
+--- a/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/mdp/terminations.py
++++ b/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/mdp/terminations.py
+@@ -66,3 +66,23 @@ def bad_roll_pitch_orientation(
+     asset: RigidObject = env.scene[asset_cfg.name]
+     roll, pitch, _ = euler_xyz_from_quat(asset.data.root_quat_w)
+     return torch.logical_or(torch.abs(roll) > limit_roll, torch.abs(pitch) > limit_pitch)
++
++
++def low_base_height(
++    env: ManagerBasedRLEnv,
++    minimum_height: float = 0.22,
++    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
++) -> torch.Tensor:
++    """Terminate when base height relative to terrain falls below threshold (prevent lying flat)."""
++    asset: RigidObject = env.scene[asset_cfg.name]
++    if hasattr(env.scene, "sensors") and "height_scanner" in env.scene.sensors:
++        height_sensor = env.scene.sensors["height_scanner"]
++        ray_hits_z = height_sensor.data.ray_hits_w[..., 2]
++        valid_hits = torch.isfinite(ray_hits_z)
++        valid_counts = valid_hits.sum(dim=-1).clamp(min=1)
++        ground_z = torch.where(valid_hits, ray_hits_z, torch.zeros_like(ray_hits_z)).sum(dim=-1) / valid_counts
++        rel_height = asset.data.root_pos_w[:, 2] - ground_z
++        return torch.where(valid_hits.any(dim=-1), rel_height < minimum_height, asset.data.root_pos_w[:, 2] < minimum_height)
++
++    return asset.data.root_pos_w[:, 2] < minimum_height
++
+diff --git a/source/dreamwaq_lab/dreamwaq_lab/terrains/__init__.py b/source/dreamwaq_lab/dreamwaq_lab/terrains/__init__.py
+index 201c8f2..ae59f6a 100644
+--- a/source/dreamwaq_lab/dreamwaq_lab/terrains/__init__.py
++++ b/source/dreamwaq_lab/dreamwaq_lab/terrains/__init__.py
+@@ -2,5 +2,11 @@
+ 
+ from .config import GO2_EXTENDED_ROUGH_TERRAINS_CFG
+ from .play_terrain_cfg import apply_play_terrain
++from .straight_stairs import MeshStraightAscendingStairsTerrainCfg, straight_ascending_stairs_terrain
+ 
+-__all__ = ["GO2_EXTENDED_ROUGH_TERRAINS_CFG", "apply_play_terrain"]
++__all__ = [
++    "GO2_EXTENDED_ROUGH_TERRAINS_CFG",
++    "apply_play_terrain",
++    "MeshStraightAscendingStairsTerrainCfg",
++    "straight_ascending_stairs_terrain",
++]
+diff --git a/source/dreamwaq_lab/dreamwaq_lab/terrains/play_terrain_cfg.py b/source/dreamwaq_lab/dreamwaq_lab/terrains/play_terrain_cfg.py
+index 712c608..01dff13 100644
+--- a/source/dreamwaq_lab/dreamwaq_lab/terrains/play_terrain_cfg.py
++++ b/source/dreamwaq_lab/dreamwaq_lab/terrains/play_terrain_cfg.py
+@@ -21,6 +21,20 @@ _FIXED_FOUR_PROPORTIONS = {
+     "hf_pyramid_slope_inv": 0.0,
+ }
+ 
++_FIXED_STAIRS_ORDER = (
++    "pyramid_stairs",
++    "pyramid_stairs_inv",
++    "random_rough",
++    "hf_pyramid_slope",
++)
++
++_FIXED_STAIRS_PROPORTIONS = {
++    "pyramid_stairs": 0.40,
++    "pyramid_stairs_inv": 0.40,
++    "random_rough": 0.10,
++    "hf_pyramid_slope": 0.10,
++}
++
+ 
+ def apply_play_terrain(
+     env_cfg,
+@@ -28,13 +42,19 @@ def apply_play_terrain(
+     difficulty: float = 0.6,
+     seed: int | None = 1,
+ ) -> None:
+-    """Configure the deterministic four-cell terrain used during playback."""
++    """Configure the deterministic terrain used during playback."""
+ 
+     normalized_name = str(profile_name).strip().lower()
+-    if normalized_name not in {"fixed_four", "play_four", "dreamwaq_play_four"}:
++    if normalized_name in {"fixed_stairs", "stairs", "play_stairs"}:
++        order = _FIXED_STAIRS_ORDER
++        proportions = _FIXED_STAIRS_PROPORTIONS
++    elif normalized_name in {"fixed_four", "play_four", "dreamwaq_play_four"}:
++        order = _FIXED_FOUR_ORDER
++        proportions = _FIXED_FOUR_PROPORTIONS
++    else:
+         raise ValueError(
+             f"Unsupported DreamWaQ play terrain profile {profile_name!r}; "
+-            "expected 'fixed_four'."
++            "expected 'fixed_four' or 'fixed_stairs'."
+         )
+ 
+     terrain = getattr(env_cfg.scene, "terrain", None)
+@@ -58,7 +78,8 @@ def apply_play_terrain(
+ 
+     sub_terrains = terrain_gen.sub_terrains
+     terrain_gen.sub_terrains = {
+-        name: sub_terrains[name] for name in _FIXED_FOUR_ORDER if name in sub_terrains
++        name: sub_terrains[name] for name in order if name in sub_terrains
+     }
+     for name, sub_terrain_cfg in terrain_gen.sub_terrains.items():
+-        sub_terrain_cfg.proportion = _FIXED_FOUR_PROPORTIONS[name]
++        sub_terrain_cfg.proportion = proportions.get(name, 0.0)
++
