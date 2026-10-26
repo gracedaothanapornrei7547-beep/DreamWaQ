@@ -1,862 +1,887 @@
-# Unitree Go2 DreamWaQ 标准化训练路线与避坑实战手册 (Production SOP & Diagnostic Guide)
+# DreamWaQ Go2 强化学习步态与动力学重构完全教学手册（小白进阶版）
 
-> **文档定位**：本手册是 Unitree Go2 基于 **DreamWaQ（$\beta\text{-VAE}$ 动力学重构世界模型）** 进行纯本体感觉盲走运控开发的**工业级生产实战与标准化训练路线手册（Standard Operating Procedure）**。
-> **编制依据**：结合 DreamWaQ 官方理论（IEEE T-RO / CoRL）、开源标杆工程（[WaxberryS](https://github.com/WaxberryS/DreamWaq_train_go2)、[Qinzx03](https://github.com/Qinzx03/DreamWaQ_Lab)、[Manaro-Alpha](https://github.com/Manaro-Alpha/DreamWaQ)）以及我们在 7400+ 轮全流程迭代中亲历的血泪教训与物理病理诊断。
-> **核心宗旨**：**正本清源，彻底杜绝“打补丁式变形训练”与“病态奖励套利”，指导未来四足机器人从第 0 步开始，走出昂首挺拔、清脆自然、兼具极限越障与强抗扰自愈的黄金步态。**
+> **文档定位**：以**“小白视角、工程直觉、物理落地三合一”**全面拆解 Unitree Go2 四足机器人基于 **DreamWaQ (CENet + VAE 动力学重构)** 架构的纯本体感觉盲走运控机理与实战调优。  
+> **适用机型**：Unitree Go2 四足机器人（12 自由度关节电机 + 6 轴 IMU）  
+> **仿真与算法框架**：IsaacLab (Omniverse PhysX) + RSL-RL (PPO + DreamWaQ CENet 变分自编码器网络)  
+> **关联参考工程**：
+> - DreamWaQ 源码基线：[`dreamwaq_lab/`](file:///home/rum/dreamwaq_lab/) (上游源: [Qinzx03/DreamWaQ_Lab](https://github.com/Qinzx03/DreamWaQ_Lab))
+> - 开源复刻鼻祖（Go1 楼梯满分模型）: [Manaro-Alpha/DreamWaQ](https://github.com/Manaro-Alpha/DreamWaQ) ([`reference_repos/Manaro-Alpha_DreamWaQ`](file:///home/rum/reference_repos/Manaro-Alpha_DreamWaQ))
+> - Go2 15cm 台阶两阶段训练工程: [WaxberryS/DreamWaq_train_go2](https://github.com/WaxberryS/DreamWaq_train_go2) ([`DreamWaq_train_go2`](file:///home/rum/DreamWaq_train_go2))
+> - Go2 MuJoCo 真实 Sim2Sim 部署套件: [WaxberryS/DreamWaQ-sim2sim_go2](https://github.com/WaxberryS/DreamWaQ-sim2sim_go2) ([`reference_repos/DreamWaQ-sim2sim_go2`](file:///home/rum/reference_repos/DreamWaQ-sim2sim_go2))
+> - 实机部署轮足/Go2落地开源: [yusongmin1/Dreamwaq](https://github.com/yusongmin1/Dreamwaq) ([`reference_repos/yusongmin1_Dreamwaq`](file:///home/rum/reference_repos/yusongmin1_Dreamwaq))
+> - HIMLoco 黄金工程与 10cm 台阶基准：[`himloco_lab/`](file:///home/rum/himloco_lab/)
+> - 生产运维规范与避坑红线：[agent.md](file:///home/rum/isaac/agent.md)
+> - HIMLoco 原理参考手册：[Himloco.md](file:///home/rum/isaac/Himloco.md)
 
 ---
 
 ## 目录
 
-- [一、 官方路线的设计哲学与第一性原理](#一-官方路线的设计哲学与第一性原理)
-  - [1.1 为什么是 DreamWaQ：动力学重构自编码](#11-为什么是-dreamwaq动力学重构自编码)
-  - [1.2 官方极简主义奖励原则：让步态自然涌现](#12-官方极简主义奖励原则让步态自然涌现)
-  - [1.3 感官拓扑与时序对齐](#13-感官拓扑与时序对齐)
-- [二、 标准全生命周期四阶段训练路线（Standard 4-Stage Roadmap）](#二-标准全生命周期四阶段训练路线standard-4-stage-roadmap)
-  - [Stage 0：环境搭建与张量维度零位校准](#stage-0环境搭建与张量维度零位校准)
-  - [Stage 1：平地纯净 Trot 冷启动定型（0 ~ 1500 轮）](#stage-1平地纯净-trot-冷启动定型0--1500-轮)
-  - [Stage 2：粗糙地貌与温和阶梯课程解耦（1500 ~ 3000 轮）](#stage-2粗糙地貌与温和阶梯课程解耦1500--3000-轮)
-  - [Stage 3：15cm 极限高台阶与三维踏面深跨攻坚（3000 ~ 5000 轮）](#stage-315cm-极限高台阶与三维踏面深跨攻坚3000--5000-轮)
-  - [Stage 4：全向盲走、抗扰自愈与 Sim2Real 交付（5000+ 轮）](#stage-4全向盲走抗扰自愈与-sim2real-交付5000-轮)
-- [三、 历史血泪教训：六大“短期见效、长期带毒”的非官方操作复盘](#三-历史血泪教训六大短期见效长期带毒的非官方操作复盘)
-  - [陷阱 1：`feet_air_time` 正向奖励的套利坍缩（跛行三腿爬行）](#陷阱-1feet_air_time-正向奖励的套利坍缩跛行三腿爬行)
-  - [陷阱 2：双边高斯抬腿目标引发的 50Hz 触电高频振颤](#陷阱-2双边高斯抬腿目标引发的-50hz-触电高频振颤)
-  - [陷阱 3：接触速度阻尼导致的“第一级台阶畏缩假死卡顿”](#陷阱-3接触速度阻尼导致的第二级台阶畏缩假死卡顿)
-  - [陷阱 4：多轴刚性姿态死锁扼杀倒立摆动能（软瘫小碎步）](#陷阱-4多轴刚性姿态死锁扼杀倒立摆动能软瘫小碎步)
-  - [陷阱 5：人工几何对称强约束带来的“神经内应力”与反弹暴偏](#陷阱-5人工几何对称强约束带来的神经内应力与反弹暴偏)
-  - [陷阱 6：长期脱离复杂地形纯平地训练引发的隐空间塌陷](#陷阱-6长期脱离复杂地形纯平地训练引发的隐空间塌陷)
-- [四、 常见异常步态病灶快速诊断与处方手册（Diagnostic Playbook）](#四-常见异常步态病灶快速诊断与处方手册diagnostic-playbook)
-  - [病灶 1：Bound 兔跳（双前腿齐迈、双后腿齐蹬）](#病灶-1bound-兔跳双前腿齐迈双后腿齐蹬)
-  - [病灶 2：足端八字脚严重向外甩（外翻鸭子步）](#病灶-2足端八字脚严重向外甩外翻鸭子步)
-  - [病灶 3：CENet 速度感知反向倒挂（真实前进，脑中以为后退）](#病灶-3cenet-速度感知反向倒挂真实前进脑中以为后退)
-  - [病灶 4：台阶落足总是踩在悬崖边缘（踏面落足纵深不足）](#病灶-4台阶落足总是踩在悬崖边缘踏面落足纵深不足)
-  - [病灶 5：走直线严重偏航漂移（持续向左或向右歪斜）](#病灶-5走直线严重偏航漂移持续向左或向右歪斜)
-  - [病灶 6：四足落地散乱、步点错位缺乏清脆对角节拍](#病灶-6四足落地散乱步点错位缺乏清脆对角节拍)
-- [五、 官方黄金标准奖励函数体系与超参基线（Clean Reward Reference）](#五-官方黄金标准奖励函数体系与超参基线clean-reward-reference)
-  - [5.1 推荐启用的正向与物理惩罚项清单](#51-推荐启用的正向与物理惩罚项清单)
-  - [5.2 严禁启用的“黑名单”奖励项](#52-严禁启用的黑名单奖励项)
-- [六、 交付部署规范（Sim2Sim & Sim2Real SOP）](#六-交付部署规范sim2sim--sim2real-sop)
-- [七、 核心战役深度精调手册：15cm 极限台阶攻坚与踏面深跨落足参数全景矩阵](#七-核心战役深度精调手册15cm-极限台阶攻坚与踏面深跨落足参数全景矩阵)
-  - [7.1 痛点病理机理深度剖析：碰阶畏缩卡顿与踏面悬崖边缘落足](#71-痛点病理机理深度剖析碰阶畏缩卡顿与踏面悬崖边缘落足)
-  - [7.2 极限台阶核心超参数调优全景矩阵（Engineering Tuning Matrix）](#72-极限台阶核心超参数调优全景矩阵engineering-tuning-matrix)
-  - [7.3 调参黄金四步法 SOP（The 4-Step Tuning Protocol）](#73-调参黄金四步法-sopthe-4-step-tuning-protocol)
-  - [7.4 TensorBoard 监控曲线特征与病态快速诊断](#74-tensorboard-监控曲线特征与病态快速诊断)
-  - [7.5 即插即用生产级代码落地模板（Production-Ready Implementation）](#75-即插即用生产级代码落地模板production-ready-implementation)
-- [八、 核心战役深度精调手册：CENet 速度感知倒挂与隐空间坍缩根治手册](#八-核心战役深度精调手册cenet-速度感知倒挂与隐空间坍缩根治手册)
-  - [8.1 CENet 速度感知倒挂机理与后验坍缩病理剖析](#81-cenet-速度感知倒挂机理与后验坍缩病理剖析)
-  - [8.2 CENet 与 β-VAE 关键超参调优矩阵](#82-cenet-与-β-vae-关键超参调优矩阵)
-  - [8.3 AdaBoot 自举训练与损失重平衡 SOP](#83-adaboot-自举训练与损失重平衡-sop)
-  - [8.4 TensorBoard 监控特征与健康指标判定](#84-tensorboard-监控特征与健康指标判定)
-  - [8.5 即插即用 CENet 与 AdaBoot 训练配置代码](#85-即插即用-cenet-与-adaboot-训练配置代码)
-- [九、 核心战役深度精调手册：纯平地激光级洗直与左右等变对称洗髓手册](#九-核心战役深度精调手册纯平地激光级洗直与左右等变对称洗髓手册)
-  - [9.1 开环偏航与“单缸推车”非对称性病理剖析](#91-开环偏航与单缸推车非对称性病理剖析)
-  - [9.2 激光洗直与等变对称核心超参矩阵](#92-激光洗直与等变对称核心超参矩阵)
-  - [9.3 Stage 13 纯平地洗直 200 轮快训 SOP](#93-stage-13-纯平地洗直-200-轮快训-sop)
-  - [9.4 即插即用等变对称洗髓奖励与环境配置](#94-即插即用等变对称洗髓奖励与环境配置)
+- [1. 零基础导读与知识导航](#ch1)
+  - [1.1 核心学习目标](#sec-1-1)
+  - [1.2 全篇知识树总览](#sec-1-2)
+- [2. 算法范式演进：从 RMA、HIMLoco 到 DreamWaQ](#ch2)
+  - [2.1 四足无视觉盲走的三大流派对比](#sec-2-1)
+  - [2.2 为什么 DreamWaQ 执着于“重构动力学”（VAE vs 对比聚类）](#sec-2-2)
+  - [2.3 CENet 的核心设计哲学：隐变量必须预测未来](#sec-2-3)
+- [3. CENet 神经网络架构深度拆解](#ch3)
+  - [3.1 共享时序编码器（Shared History Encoder）](#sec-3-1)
+  - [3.2 显式线速度回归头（3维确定性估计）](#sec-3-2)
+  - [3.3 隐变量分布头与重参数化（16维高斯潜空间）](#sec-3-3)
+  - [3.4 Clean Proprioception 预测解码器（Decoder）](#sec-3-4)
+  - [3.5 联合多任务损失函数（速度 MSE + 重构 MSE + $\beta$-VAE KL）](#sec-3-5)
+- [4. 感官解码：DreamWaQ 45 维观测拓扑与时序重排](#ch4)
+  - [4.1 45 维本体观测通道详解（警惕与 HIMLoco 的顺序陷阱！）](#sec-4-1)
+  - [4.2 5 帧时序（225维）与 Term-Major / Frame-Major 重排机理](#sec-4-2)
+  - [4.3 Actor 与 Critic 输入构建全景图](#sec-4-3)
+- [5. 物理引擎与系统时钟](#ch5)
+  - [5.1 200Hz 物理积分与 50Hz 策略时钟的协同](#sec-5-1)
+  - [5.2 200Hz vs 500Hz 对障碍冲击判定的物理影响](#sec-5-2)
+  - [5.3 域随机化（Domain Randomization）矩阵](#sec-5-3)
+- [6. 训练加速黑科技：AdaBoot 自适应速度自举](#ch6)
+  - [6.1 什么是冷启动困境？Actor 与 Estimator 的鸡生蛋蛋生鸡](#sec-6-1)
+  - [6.2 AdaBoot 概率注入机制与自适应退火](#sec-6-2)
+  - [6.3 Detach 梯度截断与双独立优化器架构](#sec-6-3)
+- [7. 避坑红线复盘：DreamWaQ 现有配置与越障断层分析](#ch7)
+  - [7.1 现有配置中的 W4 致命雷区（水平与恒高约束）](#sec-7-1)
+  - [7.2 越障反射缺失分析（自适应净空与立面逃逸）](#sec-7-2)
+  - [7.3 从粗糙地面到连续台阶的奖励重构蓝图](#sec-7-3)
+- [8. 核心代码拓扑与精读](#ch8)
+  - [8.1 dreamwaq_modules.py（CENet 核心实现）](#sec-8-1)
+  - [8.2 dreamwaq_actor_critic.py（非对称数据流）](#sec-8-2)
+  - [8.3 dreamwaq_ppo.py（双优化器与 AdaBoot 调度）](#sec-8-3)
+  - [8.4 go2_env_cfg.py（环境、观测与奖励）](#sec-8-4)
+  - [8.5 dreamwaq_exporter.py（端到端融合导出）](#sec-8-5)
+- [9. 动手实战与运维 SOP](#ch9)
+  - [9.1 观测维度与张量对齐核验 SOP](#sec-9-1)
+  - [9.2 启动无头训练与 TensorBoard 监视](#sec-9-2)
+  - [9.3 回放与端到端模型打包部署](#sec-9-3)
+- [10. 开源实战进阶：LeggedGym-Ex 多仿真器体系与 24 维显式复合估计](#ch10)
+  - [10.1 24 维显式估计 + 16 维隐变量复合架构](#sec-10-1)
+  - [10.2 多仿真器抽象与 IsaacLab 适配原理](#sec-10-2)
+  - [10.3 训练启动与导出部署 SOP](#sec-10-3)
+  - [10.4 避坑红线复查（针对 LeggedGym-Ex 的特别提醒）](#sec-10-4)
+- [11. dreamwaq_lab 原生二次开发实战（平地丝滑 + 爬楼梯落地版）](#ch11)
+  - [11.1 核心动力学与奖励重构四部曲](#sec-11-1)
+  - [11.2 温和渐进阶梯课程](#sec-11-2)
+  - [11.3 3000 轮全量训练实测收敛指标](#sec-11-3)
+  - [11.4 部署包导出与端到端交付（JIT / ONNX）](#sec-11-4)
+- [12. 四大开源复刻成功案例全景对比与技术归因手册](#ch12)
+  - [12.1 四大开源复刻项目网址与资产清单](#sec-12-1)
+  - [12.2 四大工程核心技术参数与奖励配置横向对比](#sec-12-2)
+  - [12.3 为什么早期 DreamWaQ 走得烂？四大物理死穴深度归因](#sec-12-3)
+  - [12.4 下一步工程落地路线与实施方案](#sec-12-4)
 
 ---
 
-## 一、 官方路线的设计哲学与第一性原理
+<a id="ch1"></a>
+## 1. 零基础导读与知识导航
 
-### 1.1 为什么是 DreamWaQ：动力学重构自编码
+<a id="sec-1-1"></a>
+### 1.1 核心学习目标
 
-在四足机器人纯本体盲走（Blind Locomotion）领域，存在三大算法流派：
-
-| 流派 | 代表作 | 机制 | 优缺点分析 |
-| :--- | :--- | :--- | :--- |
-| **流派一：两阶段教师-学生蒸馏** | RMA (RSS 2021) | 阶段 1 训特权 Teacher，阶段 2 用历史观测做 1D-CNN 拟合隐向量 | 训练链路冗长，两阶段迁移存在累积模仿误差。 |
-| **流派二：变分自编码动力学重构** | **DreamWaQ (T-RO 2023)** | **单阶段端到端，显式线速度回归 + 隐式 $\beta$-VAE 预测下一拍 Clean 观测** | **架构统一轻量，隐空间具真实动力学一致性；无需特权 Teacher。** |
-| **流派三：自监督几何对比聚类** | HIMLoco (ICLR 2024) | 单阶段 SwAV 在线触觉对比聚类，直接把接触模式映射到离散几何原型 | 不预测未来动力学，对时序数据增强敏感，缺少显式测速通道。 |
-
-DreamWaQ 的核心假设为：  
-> **“如果一个 16 维隐变量 $\mathbf{z}_t$ 完整表征了当前环境的物理特性（摩擦力、坡度、地面刚度与外力），那么仅凭确定性的速度估计 $\hat{\mathbf{v}}_t$ 与隐变量 $\mathbf{z}_t$，解码器（Decoder）就必然能够精准预测出机器狗下一时刻的全身无噪声运动状态 $\mathbf{s}_{t+1}$！”**
-
-这一设计将 CENet 变成了四足机器人内部的一个微型 **“前向动力学世界模型（World Model）”**。
+通过本手册与后续实战训练，我们将逐步掌握：
+1. **搞透 DreamWaQ 的隐式动力学推断**：理解 CENet 是如何利用 5 帧历史本体感知同时推算“我在跑多快”（显式速度）和“我脚下踩着什么地形”（隐变量）；
+2. **掌握 $\beta$-VAE 重构在运控中的本质作用**：为什么通过重构下一拍的 Clean Proprioception 能逼迫神经网络学习接触阻抗与外力扰动；
+3. **识别并化解两大框架的协议冲突**：彻底理清 DreamWaQ 与 HIMLoco 在 45 维通道排布、时钟频率、时序长度和导出规范上的本质差异；
+4. **攻克越障性能迁移难题**：在保留 DreamWaQ 端到端 CENet 优雅表征的同时，将 `himloco_lab` 中验证成熟的越障势场注入 DreamWaQ，打造更强健的 Go2 运控大脑。
 
 ---
 
-### 1.2 官方极简主义奖励原则：让步态自然涌现
+<a id="sec-1-2"></a>
+### 1.2 全篇知识树总览
 
-* **错误观念**：以为步态对称、直行平稳、抬腿跨步全靠在奖励函数里写死数学公式去“锁”出来。
-* **官方原则**：**四足动物的对角小跑（Trot）是物理上在 $0.5 \sim 1.5\text{ m/s}$ 速度下能耗最低、重心做功最平稳的天然驻波解！**
-* 官方做法：
-  1. 仅惩罚**机械功耗** $\sum |\boldsymbol{\tau} \cdot \dot{\mathbf{q}}|$ 和**关节力矩** $\sum \|\boldsymbol{\tau}\|^2$；
-  2. 神经网络为了拿到线速度跟踪奖励，同时避免被扣除高额能耗罚分，**物理上会自动、唯一地收敛至对角二拍小跑（Trot）**！
-  3. 绝不随意添加生硬的人工几何对称锁。
-
----
-
-### 1.3 感官拓扑与时序对齐
-
-1. **当前单步观测（45 维）**：
-   $$\mathbf{o}_t = [\,\boldsymbol{\omega}_b(3), \;\mathbf{g}_b(3), \;\mathbf{v}_{\text{cmd}}(3), \;\mathbf{q}-\mathbf{q}_{\text{nom}}(12), \;\dot{\mathbf{q}}(12), \;\mathbf{a}_{t-1}(12)\,] \in \mathbb{R}^{45}$$
-   *注：注意通道顺序，DreamWaQ 前 3 维为 IMU 角速度，速度指令在第 6~9 维。*
-2. **时序历史观测（225 维）**：
-   过去 5 帧本体感知的时序堆叠，必须按 **时间帧优先（Frame-Major）** 排布：$[F_{t-4}, F_{t-3}, F_{t-2}, F_{t-1}, F_t]$。
-3. **CENet 网络结构**：
-   - 编码器：$\mathbb{R}^{225} \xrightarrow{\text{MLP}(128, 64)} \mathbb{R}^{64}$；
-   - 速度头：$\mathbb{R}^{64} \to \hat{\mathbf{v}}_t \in \mathbb{R}^3$（确定性输出，严禁加采样噪声）；
-   - 潜变量头：$\mathbb{R}^{64} \to \boldsymbol{\mu}_z, \log \boldsymbol{\sigma}_z^2 \in \mathbb{R}^{16}$（对数方差严格限制在 $[-5, 5]$）；
-   - 解码器：$[\hat{\mathbf{v}}_t, \mathbf{z}_t] \in \mathbb{R}^{19} \xrightarrow{\text{MLP}(128, 128)} \hat{\mathbf{s}}_{t+1} \in \mathbb{R}^{45}$。
-
----
-
-## 二、 标准全生命周期四阶段训练路线（Standard 4-Stage Roadmap）
-
-为避免未来训练四足陷入局部最优，推荐采用标准的 **两阶段四步走课程法（Two-Stage, 4-Step Production Pipeline）**：
-
-```mermaid
-flowchart LR
-    S0["Stage 0: 校验与冷启动\n(张量对齐, 确定性检测)"] --> S1["Stage 1: 平地纯净 Trot 定型\n(AdaBoot 速度自举, 1500轮)"]
-    S1 --> S2["Stage 2: 粗糙地形与课程解耦\n(坡度/微阶梯, 释放姿态锁, 1500轮)"]
-    S2 --> S3["Stage 3: 15cm 极限阶梯攻坚\n(三维踏面深跨, 前瞻提膝, 2000轮)"]
-    S3 --> S4["Stage 4: 全向抗扰与交付\n(全向盲走, Sim2Real 验证)"]
+```
+DreamWaQ 核心知识树
+├── 1. 算法与表征范式
+│   ├── RMA (两阶段显式蒸馏) ──> 训练成本高、两阶段误差累积
+│   ├── HIMLoco (单阶段 SwAV 对比聚类) ──> 几何触觉聚类、无解码器
+│   └── DreamWaQ (单阶段 CENet VAE 重构) ──> 动力学重构预测、隐式自编码
+├── 2. CENet 神经网络拓扑
+│   ├── 输入：5 帧本体历史 (225维 Frame-major)
+│   ├── 共享主干：MLP 编码器 (128 -> 64)
+│   ├── 分支一：确定性线速度回归头 (3维，强监督)
+│   ├── 分支二：高斯分布隐变量头 (16维 mu/logvar, Reparameterization)
+│   └── 解码器：[v_hat, z] (19维) ──> 重构下一时刻 Clean 观测 (45维)
+├── 3. 观测与时钟系统
+│   ├── 45 维通道：[ang_vel(3), gravity(3), cmd(3), joint_pos(12), joint_vel(12), last_act(12)]
+│   ├── 双速率时钟：策略 50Hz (dt=0.02s) / 物理 200Hz (dt=0.005s, decimation=4)
+│   └── 训练自举：AdaBoot (前期真实速度辅助注入，后期退火至纯估计)
+└── 4. 交付与导出
+    └── 端到端融合导出：(current_obs, history_obs) ──> policy.pt / policy.onnx (内置 CENet)
 ```
 
 ---
 
-### Stage 0：环境搭建与张量维度零位校准
-在点火训练前，必须进行物理一致性核验：
-1. **关节顺序核验**：确保 URDF 关节树与代码中的 12 关节拓扑严格按 `[FL_hip, FL_thigh, FL_calf, FR..., RL..., RR...]` 固定排列；
-2. **零位站立高度**：静态标称高度锁定在 $0.32 \sim 0.35\text{ m}$（四腿自然微屈，避免全伸展奇异点）；
-3. **运行观测探针**：运行 `inspect_dreamwaq_observations.py`，确认历史观测长度为 5，Critic 包含 187 根高度扫描射线。
+<a id="ch2"></a>
+## 2. 算法范式演进：从 RMA、HIMLoco 到 DreamWaQ
+
+<a id="sec-2-1"></a>
+### 2.1 四足无视觉盲走的三大流派对比
+
+四足机器人纯靠关节磁编码器与 IMU 进行高动态盲走越障，核心难点在于**“未建模扰动与不可直接观测变量”**（例如真实的机身前向速度、地表摩擦力、泥泞阻抗、台阶立面碰撞）。学术界与工业界经历了三次典型进化：
+
+1. **RMA (Rapid Motor Adaptation, 2021)**：
+   - **两阶段法**：Phase 1 训练一个吃特权信息（高程图、真实外力）的特权 Teacher；Phase 2 训练一个 Student 用历史观测去模仿 Teacher 的隐向量；
+   - *痛点*：训练繁琐，分两步走，第二阶段模仿存在累积漂移。
+2. **HIMLoco (ICLR 2024)**：
+   - **单阶段无监督对比聚类**：取消两阶段蒸馏。引入 SwAV（Swapping Assignments between Views）对比学习，将两路微扰历史映射到离散聚类原型；
+   - *特点*：不尝试“预测未来”，只对“当前触觉阻抗模式”做聚类。
+3. **DreamWaQ (IEEE T-RO 2023 / CoRL 2021)**：
+   - **单阶段 VAE 动力学重构 (CENet)**：结合显式速度回归与隐式变分自编码器；
+   - *核心假设*：如果隐变量 $\mathbf{z}_t$ 足以表征当前环境（坡度、阻抗、外力），那么**只需将 $[ \hat{\mathbf{v}}_t, \mathbf{z}_t ]$ 喂给解码器，网络就应当能够精确重构出机器人下一拍的全身运动状态**！
 
 ---
 
-### Stage 1：平地纯净 Trot 冷启动定型（0 ~ 1500 轮）
-* **地形**：100% 纯平面（`terrain_type = "plane"`）。
-* **核心任务**：建立纯正的对角交替小跑节律，彻底校准 CENet 速度感知。
-* **关键参数与机制**：
-  - **启用 AdaBoot 速度自举**：前期利用真实速度 $\mathbf{v}_{\text{true}}$ 保底，使存活率迅速突破 90%，后期随奖励方差收敛自动平滑退火；
-  - **速度损失权重**：设置 `velocity_loss_weight = 3.0`，反向传播保证显式速度头梯度充足，从根源清零“速度反向倒挂”；
-  - **奖励设置**：清零 `feet_air_time = 0.0`，启用机械功耗惩罚 `joint_power_l1 = -2.0e-5`，轻微对角对称 `joint_diagonal_symmetry_l2 = -0.05`。
-* **验收门限**：
-  - 存活回合长度 $\ge 980 / 1000$ 步（存活率 $>98\%$）；
-  - CENet 速度回归 RMSE $\le 0.06\text{ m/s}$（6 厘米/秒内）；
-  - 对角步态显著交替成型，无跳兔、无外甩。
+<a id="sec-2-2"></a>
+### 2.2 为什么 DreamWaQ 执着于“重构动力学”（VAE vs 对比聚类）
+
+- **SwAV 对比聚类的优势与盲区**：
+  - 优势：不需要 Decoder，计算极快；
+  - 盲区：对比聚类容易受到数据增强分布的强影响，若扰动设计不当，隐空间可能学到无关捷径特征。
+- **VAE 重构的动力学物理直觉**：
+  - 解码器的目标是：仅凭当前的估计速度 $\hat{\mathbf{v}}$ 与隐向量 $\mathbf{z}$，预测出下一时刻的无噪声关节角度、角速度与 IMU 投影；
+  - 这逼迫隐向量 $\mathbf{z}$ 必须成为一个**“系统动力学参数包”**（包含虚拟质量偏差、电机响应延迟、地面支持反力分布等），使得 Actor 策略网络能感知到最真实的接触动力学。
 
 ---
 
-### Stage 2：粗糙地貌与温和阶梯课程解耦（1500 ~ 3000 轮）
-* **底模加载**：以 Stage 1 产出的 `model_1500.pt` 作为热启动检查点。
-* **地形**：引入包含起伏波浪地、微小碎石与 3~6cm 渐进阶梯的随机粗糙地形。
-* **核心任务**：激活 CENet 变分自编码器对复杂地貌的隐式感知，释放机身顺应地貌的自由度。
-* **关键代码修改**：
-  - **学习率降温**：将 PPO 与 VAE 学习率从 $1.0\times 10^{-3}$ **降至 $3.0\times 10^{-4}$**，保护 Stage 1 形成的 Trot 底模突触；
-  - **彻底解除避坑红线 W4**：将水平姿态刚性锁清零 `flat_orientation_l2 = 0.0`，释放机身 Pitch 仰角自由度；
-  - **放宽垂向速度阻尼**：将 `lin_vel_z_l2` 从平地的 `-3.0` 松绑至 `-0.10`；
-  - **移除假死截断**：将高度传感器瞬态误判引起的 `low_base_height` 终止条件彻底置为 `None`。
+<a id="sec-2-3"></a>
+### 2.3 CENet 的核心设计哲学：隐变量必须预测未来
+
+四足机器人奔跑时，外部环境的变化（如踩到结冰地面、陷入草地泥坑、脚尖蹭到台阶边缘）对机器狗而言是**不可直接观测的（Partially Observable）**。
+
+在 DreamWaQ 中，作者提出了一个极其优雅的假设：
+> **“如果一个 16 维隐向量 $\mathbf{z}_t$ 确实完整概括了当前机器狗面临的外部环境与动力学扰动，那么给出一个确定性的速度估计 $\hat{\mathbf{v}}_t$ 和这个隐向量 $\mathbf{z}_t$，我们应该能够通过一个简单的多层感知机（Decoder），精准预测出机器人下一时刻的所有运动状态 $\mathbf{s}_{t+1}$！”**
+
+这一设计哲学使得 CENet 的隐空间具有了扎实的**动力学一致性（Dynamic Consistency）**：
+- 它不仅仅是在隐空间做几何聚类（像 SwAV 那样找模式相似度）；
+- 它更像是一个微型的**“前向动力学仿真器”**（Forward Dynamics Model），逼迫隐变量 $\mathbf{z}_t$ 存储如摩擦系数、接触阻抗、外力扰动以及足端受阻等真实物理上下文。
 
 ---
 
-### Stage 3：15cm 极限高台阶与三维踏面深跨攻坚（3000 ~ 5000 轮）
-* **底模加载**：从 Stage 2 的成熟检查点续训。
-* **地形**：单向正向直线爬升长廊（起跑平地 2.5m + 3~15cm 自适应台阶 7m + 登顶天台）。
-* **核心任务**：攻破 15cm 极限高阶垂直立面，彻底解决第一级台阶卡顿，实现踏面深处安全落足。
-* **关键代码修改**：
-  - **0.3 秒前瞻性感知提膝门控**：利用前方射线高差探测，在脚掌撞击台阶立面前 0.3 秒，瞬间将前腿离地间隙门限动态拉高至 **$16\text{cm}$**；
-  - **切除一切接触过阻尼**：严格保持 `soft_contact_velocity_damping = 0.0` 与 `feet_contact_velocity_z = 0.0`，将接触瞬态的高爆发力矩 100% 还给电机，彻底解决卡顿；
-  - **三维踏面深跨落足偏置**：在摆动相中引入前向跨步先验，引导前足跨过立面后主动向前送腿 $+8 \sim 10\text{cm}$，深踩在 30cm 踏面的中央黄金区，根除边缘打滑。
+<a id="ch3"></a>
+## 3. CENet 神经网络架构深度拆解（代码逐行与数学解析）
+
+在 `scripts/rsl_rl/dreamwaq/dreamwaq_modules.py` 中，DreamWaQ 的核心表征提取器被封装为 `DreamWaQCENet` 类。下面我们从数学公式与代码实现双重视角逐层拆解。
+
+### 3.1 共享时序编码器（Shared History Encoder）
+
+```
+输入：225 维时序观测 (5 帧 × 45 维本体感知，Frame-major 格式)
+  │
+  ▼ Linear(225 -> 128) + ELU()
+  ▼ Linear(128 -> 64) + ELU()
+  │
+输出：64 维编码器特征向量 features
+```
+
+- **数学表达**：
+  $$\mathbf{f}_t = \text{EncoderBackbone}(\mathbf{h}_t) \in \mathbb{R}^{64}$$
+  其中 $\mathbf{h}_t \in \mathbb{R}^{225}$ 为过去 5 帧本体感知的时序堆叠。
+- **源码映射**（[`dreamwaq_modules.py:118`](file:///home/rum/dreamwaq_lab/scripts/rsl_rl/dreamwaq/dreamwaq_modules.py#L118)）：
+  ```python
+  self.encoder, encoder_feature_dim = build_backbone(history_dim, encoder_hidden_dims, activation)
+  ```
+  该主干网络参数被显式测速任务与隐式环境表征任务**完全共享**。
 
 ---
 
-### Stage 4：全向盲走、抗扰自愈与 Sim2Real 交付（5000+ 轮）
-* **核心任务**：打磨全向横移、旋转与抗突发外力冲击的自愈能力。
-* **关键代码修改**：
-  - 全面放开指令域：$v_x \in [-0.6, 1.2]\text{ m/s}$，$v_y \in [-0.5, 0.5]\text{ m/s}$，$\omega_z \in [-1.0, 1.0]\text{ rad/s}$；
-  - 注入强域随机化：电机力矩强度 $[0.9, 1.1]$，地表摩擦 $[0.4, 1.25]$，每 10 秒施加一次脉冲推力扰动；
-  - 固化 JIT / ONNX 部署包，并在 MuJoCo 真实动力学物理引擎下完成 Sim2Sim 零误差对齐。
+### 3.2 显式线速度回归头（3维确定性估计）
+
+- **数学表达**：
+  $$\hat{\mathbf{v}}_t = \mathbf{W}_v \mathbf{f}_t + \mathbf{b}_v \in \mathbb{R}^{3} \quad (\hat{v}_x, \hat{v}_y, \hat{v}_z)$$
+- **为什么速度头是确定性输出（Deterministic），而不做高斯采样？**
+  - **物理真实性**：机身线速度是物理刚体动量在笛卡尔坐标系下的投影，属于严格单值连续状态，而不是具有多模态不确定性的隐分布；
+  - **运控平稳性**：如果像传统 VAE 那样对速度也加上高斯噪声采样，喂给下游 Actor 策略网络的就是带有高频抖动跳变的速度输入，会导致 12 个电机输出 bang-bang 式的高频神经抽搐。
+- **源码映射**（[`dreamwaq_modules.py:120`](file:///home/rum/dreamwaq_lab/scripts/rsl_rl/dreamwaq/dreamwaq_modules.py#L120) 与 [`line 170`](file:///home/rum/dreamwaq_lab/scripts/rsl_rl/dreamwaq/dreamwaq_modules.py#L170)）：
+  ```python
+  self.velocity_mu_head = nn.Linear(encoder_feature_dim, estimated_velocity_dim)
+  # 前向传播中直接作为确定性速度估计：
+  estimated_velocity = velocity_mu
+  ```
 
 ---
 
-## 三、 历史血泪教训：六大“短期见效、长期带毒”的非官方操作复盘
+### 3.3 隐变量分布头与重参数化（16维高斯潜空间）
 
-### 陷阱 1：`feet_air_time` 正向奖励的套利坍缩（跛行三腿爬行）
-* **诱惑与表象**：希望通过给抬腿腾空加分，激励机器狗跑大跨步。
-* **致命后果**：DreamWaQ 没有相位时钟，策略迅速找到作弊漏洞——**将一条腿常态化高挂在空中 1 秒以上不落下，用其余三条腿在地上像瘸子一样点地划水**，源源不断榨取正向分，形成严重跛行。
-* **官方正道**：坚决将 `feet_air_time` 置为 0，用足端拖地惩罚（单边门限）与功耗约束引导自然抬腿。
-
----
-
-### 陷阱 2：双边高斯抬腿目标引发的 50Hz 触电高频振颤
-* **诱惑与表象**：使用 $\exp(-\|v\|(z - z_{\text{target}})^2 / \sigma^2)$ 规定足端离地高度。
-* **致命后果**：不仅惩罚拖地，**在足端高于目标（如大步跨越抬起 8cm）时同样剧烈扣分**！摆动腿想抬高被惩罚向下打压，下一帧拖地又被推起，关节电机在 50Hz 策略时钟下发生剧烈角加速度往复震荡，四足空中疯狂打颤触电。
-* **官方正道**：改用**单边轻量门限**（低于安全线按 L1 惩罚拖地，高于安全线完全不扣分）。
-
----
-
-### 陷阱 3：接触速度阻尼导致的“第一级台阶畏缩假死卡顿”
-* **诱惑与表象**：加入 `soft_contact_velocity_damping` 试图抑制脚掌砸地的冲击噪音与机身晃动。
-* **致命后果**：碰上 15cm 台阶的一瞬间必然存在非零的法向冲击速度。阻尼惩罚让策略产生严重的“撞击恐惧”，电机本能卸力缩腿，当场在第一阶原地停顿卡死。
-* **官方正道**：冲击完全由底层 PD 控制器的物理阻尼（Kd=0.5~0.75）吸收，**RL 奖励层绝不惩罚接触冲量**。
-
----
-
-### 陷阱 4：多轴刚性姿态死锁扼杀倒立摆动能（软瘫小碎步）
-* **诱惑与表象**：给 `pitch`、`roll`、`flat_orientation` 堆叠高额负奖励，试图强行压平机身。
-* **致命后果**：对角 Trot 本质是倒立摆动力学，必然伴随 $1^\circ \sim 3^\circ$ 的微幅俯仰与横滚起伏。全轴死锁等于把机器狗关进铁笼，为了不被扣分，策略只能锁死腰跨，走出极其猥琐无力的软瘫小碎步。
-* **官方正道**：仅保留单一温和的重力矢量投影约束（`-0.2`），允许机身俯仰自由顺应地形。
+隐变量 $\mathbf{z}_t$ 建模为对角高斯分布 $\mathcal{N}(\boldsymbol{\mu}_z, \operatorname{diag}(\boldsymbol{\sigma}_z^2))$：
+- **均值与对数方差网络**：
+  $$\boldsymbol{\mu}_z = \mathbf{W}_{\mu} \mathbf{f}_t + \mathbf{b}_{\mu} \in \mathbb{R}^{16}$$
+  $$\log \boldsymbol{\sigma}_z^2 = \operatorname{Hardtanh}_{[-5, 5]}(\mathbf{W}_{\sigma} \mathbf{f}_t + \mathbf{b}_{\sigma}) \in \mathbb{R}^{16}$$
+- **工程避坑细节：为什么对 $\log \boldsymbol{\sigma}_z^2$ 强加 Hardtanh 截断？**
+  在神经网络训练早期，梯度震荡极容易让方差预测层输出极大或极小的负值。如果不做限制：
+  - 若 $\log \sigma^2 > 88$，浮点指数运算 $\exp(0.5 \log \sigma^2)$ 直接溢出为 `Inf` 或 `NaN`，导致整个模型梯度爆炸崩溃；
+  - 若 $\log \sigma^2 < -20$，标准差逼近 0，网络退化为确定性映射，失去变分泛化性。
+  代码中严格将其锁定在 $[-5.0, 5.0]$ 之间，对应 $\sigma \in [\exp(-2.5), \exp(2.5)] \approx [0.082, 12.18]$，保证了极高的数值稳定性。
+- **重参数化技巧（Reparameterization Trick）**：
+  $$\mathbf{z}_t = \boldsymbol{\mu}_z + \boldsymbol{\epsilon} \odot \exp\left(0.5 \log \boldsymbol{\sigma}_z^2\right), \quad \boldsymbol{\epsilon} \sim \mathcal{N}(\mathbf{0}, \mathbf{I}_{16})$$
+  - **训练阶段**：启用采样（`sample_latent=True`），使隐空间保持连续平滑，便于变分推断；
+  - **控制与推理阶段**：强制置零噪声（`sample_latent=False`），直接返回均值 $\mathbf{z}_t = \boldsymbol{\mu}_z$！这保证了策略在真机部署与推理时的完全确定性。
+- **源码映射**（[`dreamwaq_modules.py:127-156`](file:///home/rum/dreamwaq_lab/scripts/rsl_rl/dreamwaq/dreamwaq_modules.py#L127-L156)）：
+  ```python
+  @staticmethod
+  def reparameterize(mu: torch.Tensor, logvar: torch.Tensor, sample: bool) -> torch.Tensor:
+      if not sample:
+          return mu
+      std = torch.exp(0.5 * logvar)
+      eps = torch.randn_like(std)
+      return mu + eps * std
+  ```
 
 ---
 
-### 陷阱 5：人工几何对称强约束带来的“神经内应力”与反弹暴偏
-* **诱惑与表象**：给对角腿和左右髋关节施加强力等变惩罚，强制直行。
-* **致命后果**：不仅压制了机器人单脚打滑时单侧代偿求生的能力，还会在神经网络内部积聚巨大的非对称张力。一旦环境改变或约束稍作松绑，累积的神经应力会剧烈反弹（Stage 12 松绑后向右暴偏 2 米）。
-* **官方正道**：用**四肢机械功耗均等化（`power_distribution_variance = -1.0e-5`）**代替生硬的关节角度锁，让对称性在能量极小化中自然涌现。
+### 3.4 Clean Proprioception 预测解码器（Decoder）
+
+- **输入通道**：
+  $$\mathbf{c}_t = [ \hat{\mathbf{v}}_t, \, \mathbf{z}_t ] \in \mathbb{R}^{3 + 16} = \mathbb{R}^{19}$$
+- **网络结构**：
+  $$\hat{\mathbf{s}}_{t+1} = \text{Decoder}(\mathbf{c}_t): \quad \mathbb{R}^{19} \xrightarrow{\text{MLP}(128, 128)} \mathbb{R}^{45}$$
+- **物理目标解析**：
+  解码器输出 45 维向量 $\hat{\mathbf{s}}_{t+1}$，其监督目标不是当前帧的观测，而是**下一时间步的无噪声本体感知（Next Clean Proprioception）**：
+  $$\mathbf{s}_{t+1}^{\text{clean}} = [ \boldsymbol{\omega}_{b, t+1}, \, \mathbf{g}_{b, t+1}, \, \mathbf{v}_{\text{cmd}, t+1}, \, \mathbf{q}_{t+1} - \mathbf{q}_{\text{nom}}, \, \dot{\mathbf{q}}_{t+1}, \, \mathbf{a}_t ]$$
+- **为什么一定要重构“无噪声的目标”？**
+  - 在强化学习中，为了 Sim2Sim 泛化，Actor 观测中注入了大量传感器均匀噪声（如关节速度加了 $\pm 1.5\,\text{rad/s}$ 噪声）；
+  - 如果 Decoder 去逼近带噪声的观测，CENet 就会浪费模型容量去拟合高斯白噪声；
+  - 逼近 Clean 真实物理值，等价于赋予了 CENet **卡尔曼滤波去噪（Denoising）与物理前向模拟**的双重能力！
 
 ---
 
-### 陷阱 6：长期脱离复杂地形纯平地训练引发的隐空间塌陷
-* **诱惑与表象**：觉得平地好训练，长期在纯平地上微调。
-* **致命后果**：平地没有阻抗和坡度变化，解码器无需隐变量就能完成重构，导致 CENet 16 维隐变量 $\mathbf{z}$ 的 KL 散度退化坍缩为全零白噪声，丧失了在复杂地形中的前向感知能力。
-* **官方正道**：始终让机器狗在包含摩擦突变、质量偏差与地形扰动的环境中浸润训练。
+### 3.5 联合多任务损失函数（速度 MSE + 重构 MSE + $\beta$-VAE KL）
+
+在每个更新步中，CENet 产生三个维度的辅助损失（[`dreamwaq_actor_critic.py:592-596`](file:///home/rum/dreamwaq_lab/scripts/rsl_rl/dreamwaq/dreamwaq_actor_critic.py#L592-L596)）：
+
+$$\mathcal{L}_{\text{CENet}} = w_v \mathcal{L}_{\text{vel}} + w_r \mathcal{L}_{\text{recon}} + w_{\text{kl}} \cdot \beta \cdot \mathcal{L}_{\text{KL}}$$
+
+#### 1. 显式线速度回归损失：
+$$\mathcal{L}_{\text{vel}} = \frac{1}{|\mathcal{B}_{\text{valid}}|} \sum_{i \in \mathcal{B}_{\text{valid}}} \|\hat{\mathbf{v}}_i - \mathbf{v}_i^{\text{true}}\|^2$$
+其中真实速度 $\mathbf{v}_i^{\text{true}}$ 直接从特权 Critic 观测通道切片获取。
+
+#### 2. 下一步动力学重构损失：
+$$\mathcal{L}_{\text{recon}} = \frac{1}{|\mathcal{B}_{\text{valid}}|} \sum_{i \in \mathcal{B}_{\text{valid}}} \|\hat{\mathbf{s}}_{t+1, i} - \mathbf{s}_{t+1, i}^{\text{clean}}\|^2$$
+
+#### 3. 隐变量变分正则化（KL 散度）：
+根据解析公式计算高斯分布与标准正态分布 $\mathcal{N}(\mathbf{0}, \mathbf{I})$ 的 KL 散度：
+$$\mathcal{L}_{\text{KL}} = \frac{1}{|\mathcal{B}_{\text{valid}}|} \sum_{i \in \mathcal{B}_{\text{valid}}} \left[ -\frac{1}{2} \sum_{j=1}^{16} \left( 1 + \log \sigma_{i, j}^2 - \mu_{i, j}^2 - \exp(\log \sigma_{i, j}^2) \right) \right]$$
+
+#### 4. 关键工程边界：死亡与重置样本掩码 (`live_mask`)
+注意代码第 567~584 行的处理：
+如果机器人发生侧翻或时间耗尽（$d_t = 1$），环境会在下一帧被瞬间重置到原点或随机姿态。此时的 $\mathbf{s}_{t+1}$ 是“瞬移重置状态”，跟上一帧的物理动作毫无因果关联！
+代码通过 `live_mask = 1.0 - dones.float()` 严格剔除了重置样本：
+```python
+valid = live_mask.reshape(-1) > 0.5
+velocity_loss = F.mse_loss(velocity_pred[valid], velocity_target[valid])
+reconstruction_loss = F.mse_loss(reconstruction_pred[valid], reconstruction_target[valid])
+```
+这彻底杜绝了环境瞬间重置产生的阶跃异常梯度污染 CENet 的动力学理解。
 
 ---
 
-## 四、 常见异常步态病灶快速诊断与处方手册（Diagnostic Playbook）
+<a id="ch4"></a>
+## 4. 感官解码：DreamWaQ 45 维观测拓扑与时序重排
 
-| 异常病灶现象 | 根本动力学根因 | 排查代码项 | 官方/标准物理处方 |
-| :--- | :--- | :--- | :--- |
-| **1. Bound 兔跳**<br>(双前肢齐迈, 双后肢齐蹬) | 未约束对角相位，双腿齐蹬成为前向冲刺的作弊捷径 | `joint_diagonal_symmetry_l2` 为 0 或过小；未启功耗均衡 | 在平地阶段临时引入对角大腿/小腿关节偏差惩罚（`-0.15 ~ -0.25`），在代数空间封杀兔跳收益。 |
-| **2. 足端八字脚外甩**<br>(像鸭子一样两边晃荡) | 摆动相大腿侧向甩动能耗未被征税，髋关节零位漂移 | 缺乏摆动相外展惩罚；`hip_joint` 标称角设置不合理 | 激活摆动相专属髋关节外展画弧惩罚 `swing_hip_abduction_l2 = -0.30`，仅在直线前进时收紧矢状面。 |
-| **3. CENet 速度倒挂**<br>(真实前进，估计为后退) | 速度回归头损失权重不足，反向传播被重构或价值损失冲淡 | `velocity_loss_weight` 为默认 1.0；未用 AdaBoot | 将 `velocity_loss_weight` 提升至 **3.0**；开启 AdaBoot 速度自举，前期注入真值。 |
-| **4. 台阶落足踩悬崖边缘**<br>(踏面落足过于靠外) | 仅有垂直 Z 轴抬腿高度，缺乏水平 X 轴前向送腿先验 | `terrain_relative_foot_clearance` 只有 Z 轴判据 | 引入台阶摆动相前向跨步偏移 $\Delta x_{\text{step}} = +0.08\text{m}$，强制前腿向踏面中心深处下插。 |
-| **5. 走直线严重跑偏**<br>(开环持续向单侧歪斜) | 左右肢体做功严重不对称（单侧单缸大功率推车） | 左右后腿做功比 $> 2.0$；未加功耗方差约束 | 引入四肢功率离散度惩罚 `power_distribution_variance = -1.0e-5`，逼迫四足均摊负荷。 |
-| **6. 落地散乱缺乏清脆二拍**<br>(四足触地时间错位) | 缺乏触地/滞空时间方差约束，四腿轮流点地划水 | `feet_air_time_variance` 被置为 0 | 在平地状态激活门控滞空时间方差 `feet_air_time_variance = -0.25`，促成二拍同步对齐。 |
+<a id="sec-4-1"></a>
+### 4.1 45 维本体观测通道详解（警惕与 HIMLoco 的顺序陷阱！）
+
+这是开发者在两个工程之间迁移时**最容易引发重大事故的雷区**。两者单步虽然都是 45 维，但**前 9 维排布完全不一致**！
+
+| 维度索引 | HIMLoco (`himloco_lab`) 通道与缩放 | DreamWaQ (`dreamwaq_lab`) 通道与缩放 | 硬件传感器物理来源 |
+| :---: | :--- | :--- | :--- |
+| **`0:3`** | **速度指令 $\mathbf{v}_{\text{cmd}}$**（Scale: `(2.0, 2.0, 0.25)`） | **机身角速度 $\boldsymbol{\omega}_b$**（Scale: `0.2`） | IMU 陀螺仪 / 顶层遥控器手柄 |
+| **`3:6`** | **机身角速度 $\boldsymbol{\omega}_b$**（Scale: `0.25`） | **重力矢量投影 $\mathbf{g}_b$**（Scale: `1.0`） | 6 轴 IMU 重力加速度计 |
+| **`6:9`** | **重力矢量投影 $\mathbf{g}_b$**（Scale: `1.0`） | **速度指令 $\mathbf{v}_{\text{cmd}}$**（Scale: `1.0`） | 顶层速度手柄输入 |
+| **`9:21`** | **关节位置偏差 $\mathbf{q} - \mathbf{q}_{\text{nom}}$**（12维） | **关节位置偏差 $\mathbf{q} - \mathbf{q}_{\text{nom}}$**（12维） | 12 个电机绝对值编码器 |
+| **`21:33`** | **关节转动速度 $\dot{\mathbf{q}}$**（12维，Scale: `0.05`） | **关节转动速度 $\dot{\mathbf{q}}$**（12维，Scale: `0.05`） | 12 个电机速度传感器 |
+| **`33:45`** | **上一时刻网络动作 $\mathbf{a}_{t-1}$**（12维） | **上一时刻网络动作 $\mathbf{a}_{t-1}$**（12维） | 策略输出缓存 Ring Buffer |
+
+> [!WARNING] **重度致命警告**
+> 1. DreamWaQ 将机身角速度放在最前（`0:3`），速度指令排在第 `6:9`；而 HIMLoco 将指令排在最前（`0:3`）；
+> 2. HIMLoco 对线速度指令做了 `2.0` 的缩放放大，而 DreamWaQ 的指令缩放为 `1.0`；
+> 3. 若直接把 HIMLoco 的观测张量喂给 DreamWaQ 模型，机器人会把遥控器前进摇杆指令当成 IMU 旋转角速度，直接暴走翻车！
 
 ---
 
-## 五、 官方黄金标准奖励函数体系与超参基线（Clean Reward Reference）
+<a id="sec-4-2"></a>
+### 4.2 5 帧时序（225维）与 Term-Major / Frame-Major 重排机理
 
-### 5.1 推荐启用的正向与物理惩罚项清单
+IsaacLab 的 `ObservationGroupCfg` 管理器有一个底层特性：当设置 `history_length = 5` 且 `flatten_history_dim = True` 时，IsaacLab 会按**“特征项优先（Term-major）”**的格式拼接张量：
+
+```
+【IsaacLab 原始输出：Term-major (225维)】
+[
+  ang_vel(5帧x3=15维), 
+  gravity(5帧x3=15维), 
+  cmd(5帧x3=15维), 
+  joint_pos(5帧x12=60维), 
+  joint_vel(5帧x12=60维), 
+  actions(5帧x12=60维)
+]
+```
+
+然而，神经网络理解时序最符合因果逻辑的方式是**“时间帧优先（Frame-major）”**：
+```
+【CENet 期望输入：Frame-major (225维)】
+[
+  Frame_{t-4} (45维完整观测),
+  Frame_{t-3} (45维完整观测),
+  Frame_{t-2} (45维完整观测),
+  Frame_{t-1} (45维完整观测),
+  Frame_{t}   (45维完整观测)
+]
+```
+
+#### 代码实现与张量变换推导（[`dreamwaq_actor_critic.py:282-301`](file:///home/rum/dreamwaq_lab/scripts/rsl_rl/dreamwaq/dreamwaq_actor_critic.py#L282-L301)）：
 
 ```python
-# ==============================================================================
-# 官方标准环境配置参考 (Standard Production Baseline)
-# ==============================================================================
+def _term_major_history_to_frame_major(self, history_obs: torch.Tensor) -> torch.Tensor:
+    term_chunks: list[torch.Tensor] = []
+    cursor = 0
+    # term_dims = (3, 3, 3, 12, 12, 12)
+    for term_dim in self.history_term_dims:
+        chunk_size = self.history_length * term_dim  # 如 5 * 12 = 60
+        term_chunk = history_obs[..., cursor : cursor + chunk_size]
+        # 重塑为 [batch, 5, term_dim]
+        term_chunks.append(term_chunk.reshape(*history_obs.shape[:-1], self.history_length, term_dim))
+        cursor += chunk_size
+    
+    # 在特征维度合并所有 term: [batch, 5, 45]
+    frame_major = torch.cat(term_chunks, dim=-1)
+    # 展平回 [batch, 225]
+    return frame_major.reshape(*history_obs.shape[:-1], self.history_obs_dim)
+```
+这一步保证了进入 CENet Encoder 的每一块切片，在时空物理结构上都是严格对齐的。
 
-# 1. 速度指令追踪 (核心驱动)
-rewards.track_lin_vel_xy_exp.weight = 1.5      # exp(-||v_xy - cmd||^2 / 0.25)
-rewards.track_ang_vel_z_exp.weight = 1.0       # exp(-(w_z - cmd_wz)^2 / 0.25)
+---
 
-# 2. 姿态与起伏控制 (温和引导，释放倒立摆动能)
-rewards.flat_orientation_l2.weight = -0.20     # 全局重力矢量投影 (平地阶段)
-rewards.ang_vel_xy_l2.weight = -0.05           # 仅抑制高频抖动共振
-rewards.lin_vel_z_l2.weight = -0.10            # 允许越障正向 vz，平地可收紧至 -2.0
+<a id="sec-4-3"></a>
+### 4.3 Actor 与 Critic 输入构建全景图
 
-# 3. 动力学能耗与平滑度 (逼出纯正 Trot 的根基)
-rewards.joint_power_l1.weight = -2.0e-5        # 机械功耗惩罚: sum(|tau * v|)
-rewards.dof_torques_l2.weight = -1.0e-5        # 关节力矩平方和
-rewards.dof_acc_l2.weight = -2.5e-7            # 关节角加速度 (防高频震荡)
-rewards.action_rate_l2.weight = -0.01          # 一阶动作变化率
-rewards.action_smoothness_l2.weight = -0.01    # 二阶动作平滑度
-
-# 4. 步态与越障导引 (单边门限，绝不高斯双向扣分)
-rewards.terrain_relative_foot_clearance_l1.weight = -0.02
-rewards.terrain_relative_foot_clearance_l1.params["target_clearance"] = 0.05
-rewards.power_distribution_variance_l2.weight = -1.0e-5  # 四肢负荷均摊 (根治跛行单缸跑偏)
+```
+                ┌──────────────────────────────────────────────┐
+                │ 5 帧本体历史 (225维 Term-major from IsaacLab) │
+                └──────────────────────┬───────────────────────┘
+                                       │ 转为 Frame-major
+                                       ▼
+                       ┌───────────────────────────────┐
+                       │     DreamWaQ CENet 表征网络    │
+                       └───────────────┬───────────────┘
+                                       │
+                         ┌─────────────┴─────────────┐
+                         ▼ 估计速度                  ▼ 隐变量均值
+                   v_hat (3维)                  z_t (16维)
+                         │                           │
+                         └─────────────┬─────────────┘
+                                       │ 拼接 (19维)
+                                       │ + 当前帧 45 维本体感知
+                                       ▼
+                       ┌───────────────────────────────┐
+                       │    Actor 策略网络真实输入      │
+                       │ [v_hat(3), z_t(16), obs(45)]  │
+                       │           (总计 64维)         │
+                       └───────────────┬───────────────┘
+                                       ▼
+                          输出 12 个关节目标角度动作
 ```
 
-### 5.2 严禁启用的“黑名单”奖励项
-
-| 奖励项名称 | 严禁理由 |
-| :--- | :--- |
-| **`feet_air_time > 0.0`** | 无时钟下必引发单腿常悬、三腿爬行套利！ |
-| **双边高斯 `foot_clearance`** | 抬高也扣分，直接导致 50Hz 空中打颤触电！ |
-| **`soft_contact_velocity_damping`** | 惩罚接触冲量，导致第一级台阶瞬间畏缩卡死假死！ |
-| **静态全轴刚性锁 (`pitch/roll=-1.0`)** | 掐死倒立摆动能，逼出软瘫不敢迈步的猥琐小碎步！ |
+- **Actor 输入严格锁定为 64 维**：
+  $$\mathbf{x}_{\text{actor}} = [ \hat{\mathbf{v}}_t(3), \, \mathbf{z}_t(16), \, \mathbf{s}_t(45) ] \in \mathbb{R}^{64}$$
+- **Critic 输入（包含特权信息）**：
+  $$\mathbf{x}_{\text{critic}} = [ \mathbf{s}_t^{\text{clean}}(45), \, \mathbf{v}_{\text{true}}(3), \, \ddot{\mathbf{q}}(12), \, \boldsymbol{\tau}(12), \, \mathbf{F}_{\text{foot}}(4), \, \text{height\_scan}(1.6\text{m}\times 1.0\text{m}) ]$$
+  Critic 拥有上帝视角，能够准确评估状态价值 $V(s)$，从而指导 Actor 稳定进化。
 
 ---
 
-## 六、 交付部署规范（Sim2Sim & Sim2Real SOP）
+<a id="ch5"></a>
+## 5. 物理引擎与系统时钟
 
-1. **JIT / ONNX 一体化融合导出**：
-   - 训练完成后，必须通过自动化导出流水线将 **CENet 编码器 + 速度预测头 + 隐变量均值头 + Actor 策略网络** 融合为单一模型（约 $1.1\text{ MB}$）；
-   - 推理时严格关闭采样（`sample_latent=False`），确保真机端输入输出 100% 确定性。
-2. **时序环形缓冲区规范**：
-   - 部署端需维护一个长度为 5 帧、单帧 45 维的 FIFO 环形缓冲区；
-   - 严格保证输入维度与缩放与训练端一致：机身角速度（Scale 0.2）、速度指令（Scale 1.0）、关节速度（Scale 0.05）。
-3. **真实电机底层 PD 标定**：
-   - Unitree Go2 实机电机推荐刚度参数：$K_p = 25.0 \sim 28.0\text{ N}\cdot\text{m/rad}$，$K_d = 0.5 \sim 0.75\text{ N}\cdot\text{m}\cdot\text{s/rad}$；
-   - 严禁在真机端使用过大的 $K_p$，以允许足端在触碰硬质地面时具备自然的力学柔顺弹性。
+<a id="sec-5-1"></a>
+### 5.1 200Hz 物理积分与 50Hz 策略时钟的协同
 
----
+在 [`go2_env_cfg.py:615-618`](file:///home/rum/dreamwaq_lab/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/go2_env_cfg.py#L615-L618) 中，DreamWaQ 的仿真时钟设定如下：
 
-## 七、 核心战役深度精调手册：15cm 极限台阶攻坚与踏面深跨落足参数全景矩阵
+$$\Delta t_{\text{sim}} = 0.005\,\text{s} \quad (200\,\text{Hz}), \qquad \Delta t_{\text{policy}} = 0.02\,\text{s} \quad (50\,\text{Hz})$$
 
-在盲走运控（Blind Locomotion）中，**15cm 直角垂直连续台阶（Riser = 15cm, Tread = 30cm）** 是四足机器人从“玩具级平地溜达”跨入“工业级极限越障”的试金石与分水岭。此阶段容错率极低，任何细微的超参偏差都会立刻引发机器人碰阶畏缩假死、踏面边缘溜蹄滑落或触电振颤。
+$$\text{Decimation} = \frac{\Delta t_{\text{policy}}}{\Delta t_{\text{sim}}} = 4$$
 
-本章沉淀自 7400+ 轮攻坚实战，为下次从零训练提供**保姆级参数全景矩阵、物理量纲敏感度、四大执行次序与即插即用代码模板**。
+每次策略网络下发 12 维动作（$50\,\text{Hz}$），PhysX 物理引擎在后台执行 **4 次数值积分子步**。  
+- **算力收益**：相比于 HIMLoco 的 500Hz（Decimation 10），200Hz 每秒只需进行 200 次接触碰撞求解，在 4096 并行环境下，GPU 吞吐率（FPS）提升约 **40%~60%**，大幅缩短了实验迭代时间。
 
 ---
 
-### 7.1 痛点病理机理深度剖析：碰阶畏缩卡顿与踏面悬崖边缘落足
+<a id="sec-5-2"></a>
+### 5.2 200Hz vs 500Hz 对障碍冲击判定的物理影响
 
-#### 1. 病灶 A：第一阶碰阶畏缩假死（First-Step Hesitation & Freezing）
-- **现象表征**：机器人在平地行走如风，但在抵达楼梯第一级台阶瞬间，前腿刚触碰垂直立面（Riser）便瞬间卸力收腿，机身原地踏步、畏缩不敢前进，最终因超时或后腿卡滞在走廊倾覆。
-- **底层物理病因**：
-  1. **接触速度阻尼与碰撞惩罚的“误伤效应”**：
-     - 若开启了 `soft_contact_velocity_damping`（惩罚足端在接触瞬间的法向/切向速度）或 `undesired_contacts`（将膝关节/小腿碰阶视为摔倒惩罚），由于爬楼梯时小腿外壁与台阶直角边沿发生刮擦碰撞是不可避免的物理动力学过程，PPO 策略会发现：**“停在台阶前装死不动，扣分远少于奋力向前翻越碰撞被扣的大分”**。网络迅速收敛至原地悬停的局部鞍点。
-  2. **下落触地保护门控缺失（Landing Gate Deadlock）**：
-     - 摆动相在完成最高点提膝后，必须向下落脚（$v_z^{\text{foot}} < 0$）以踩实台阶踏面。若足端净空惩罚未设置触地门控，当脚向下降落时，高度 $h$ 自然回落逼近踏面，奖励函数却粗暴地认为“离地高度低于目标值 $h_{\text{target}}$”并持续重罚。**网络误以为“踩下台阶踏面是有罪的”**，从而导致四足悬在半空打颤不敢落地。
-  3. **纯反应式下视扫描的时延断崖（Reactive Perception Lag）**：
-     - 若射线传感器仅采集足端垂直正下方的局部高度，当机身以 $0.6 \sim 1.0\text{ m/s}$ 前冲时，在足端越过立面前的最后一毫秒，脚下依然被判定为“平地”！直到小腿硬生生撞在 15cm 立面上，网络才感知到高差，此时电机反作用力已被机械锁死，彻底错过提膝抛物线顶点。
-
-#### 2. 病灶 B：踏面悬崖边缘落足（Cliff-Edge Landing & Slip-Off）
-- **现象表征**：前腿虽然能够勉强抬过 15cm 台阶高度，但落地时每次都精准踩在台阶踏面的最前端边缘（距悬崖边缘仅 $1 \sim 3\text{cm}$），后腿稍一蹬地前足即打滑溜蹄，整机向后栽倒。
-- **底层物理病因**：
-  - 传统高度惩罚仅对垂直 $Z$ 轴高度施加约束，缺少**水平矢状面 $X$ 轴前向送腿冲量先验（Forward Step Bias）**。
-  - Go2 平地正常行进步长约 $0.12 \sim 0.15\text{m}$，面对 $0.30\text{m}$ 深度的踏面，若不人为引导前肢向深处跨越，机器人的摆动相终点自然落在上一级立面的边缘临界面。
-  - **物理对策**：必须在摆动相中引入 Raibert 跨步前向补偿项 $\Delta x_{\text{step}} = +0.08 \sim 0.10\text{m}$，或在射线前瞻中强制要求落足向前方踏面中心（距离边缘至少 $10\text{cm}$）下插。
+尽管 200Hz 拥有算力优势，但在**极端越障地形（如 10cm 连续台阶立面）**下，物理求解器会暴露出显著差异：
+1. **碰撞穿透（Penetration）与力学突变**：
+   - 机器狗前向奔跑速度达到 $0.8\,\text{m/s}$ 时，在 $5\,\text{ms}$ 的积分步长内，摆动脚位移达到 $4\,\text{mm}$。如果刚好碰在台阶锐利直角上，容易在单个子步产生较大的穿透深度，导致下一子步结算出不真实的几百牛顿瞬态弹力（Contact chatter）；
+   - 在 500Hz ($2\,\text{ms}$) 下，穿透深度被压制在 $1.6\,\text{mm}$ 以内，接触力更加连续平滑。
+2. **结论与建议**：
+   - 对于普通平地与粗糙起伏地貌，200Hz 完全能够胜任；
+   - 若后续需要向 10cm/15cm 极限尖锐楼梯台阶迁移，需视接触穿透情况考虑将 `sim.dt` 提升至 500Hz（Decimation 10）。
 
 ---
 
-### 7.2 极限台阶核心超参数调优全景矩阵（Engineering Tuning Matrix）
+<a id="sec-5-3"></a>
+### 5.3 域随机化（Domain Randomization）矩阵
 
-| 超参数符号 (Python Identifier) | 物理意义与数学公式 | 黄金基准值 | 安全调节区间 | 敏感度 | 调大（Excessive）病理表征 | 调小（Deficient）病理表征 |
-| :--- | :--- | :--- | :--- | :---: | :--- | :--- |
-| `terrain_relative_foot_clearance_l1.weight` | 足端地形相对净空惩罚权重<br>$w \cdot \sum \text{shortfall}$ | **`-0.10 ~ -0.12`** | `[-0.05, -0.20]` | **极高** | 抢夺速度追踪主导权，机身剧烈颠簸，踏面高频跺地 | 提膝不足，小腿正面猛烈撞击立面卡死假死 |
-| `target_clearance` (平地阶段) | 平地名义腾空目标高度 $h_{\text{flat}}$ | **`0.022 m (22mm)`** | `[0.018, 0.028]` | **高** | 演化为 50Hz 触电小碎步或大跨步跺地，平地跑偏加剧 | 拖地扫堂腿，稍微遇到 2cm 粗糙地貌即绊倒摔翻 |
-| `target_clearance` (台阶阶段) | 15cm 台阶专属腾空高度 $h_{\text{stairs}}$ | **`0.160 m (16cm)`** | `[0.140, 0.180]` | **极高** | 屈膝过度导致后仰坐地，机身重心理论极限失稳 | 15cm 极限台阶必然绊脚卡顿，第一阶直接切入失败 |
-| `excess_penalty_scale` | 平地超额抬腿严惩倍率<br>$(1-\alpha) \cdot \text{excess} \cdot s$ | **`3.0`** | `[2.0, 5.0]` | **中** | 彻底掐死抬腿，平地贴地滑行容易摩擦自锁 | 平地依然保留高抬腿习惯，无法走出磁悬浮滑行 |
-| `forward_lookahead_range` | 前瞻自适应射线窗口 $dx_{\text{ahead}}$ | **`[0.05, 0.40] m`** | `[0.05, 0.50]` | **高** | 距离台阶 0.5 米外即提前无故发癫高提膝 | 时延过大，前腿撞到立面后才被动提膝，完全失效 |
-| `landing_gate_vz_threshold` | 落地保护垂直速度阈值<br>$\text{clamp}((v_z + 0.15)/0.2, 0, 1)$ | **`-0.15 m/s`** | `[-0.25, -0.10]` | **极高** | 提膝顶峰时提前误判为触地，提膝高度腰斩 | 下降落地时仍然遭受高度缺额重罚，四足半空悬停不敢落地 |
-| `speed_scale` (Tanh 水平速度门限) | 摆动足水平速度加权系数<br>$\tanh(\text{scale} \cdot \|v_{xy}\|)$ | **`2.0`** | `[1.5, 3.0]` | **中** | 足端轻微晃动即触发全额惩罚，增加策略探索阻力 | 低速时无法激活提膝约束，慢速爬阶时依然绊脚 |
-| `soft_contact_velocity_damping` | 接触速度阻尼系数 | **`0.0 (绝对清零)`** | `[0.0, 0.0]` | **禁区** | **第一级台阶瞬间畏缩卡死假死！必须为 0！** | 无不良反应，由关节功耗惩罚自然平抑接触冲量 |
-| `undesired_contacts.weight` | 小腿与膝关节非期望碰撞惩罚 | **`0.0 (台阶必须归零)`** | `[0.0, -0.01]` | **禁区** | 爬楼梯刮擦立面被重判导致倒退逃跑、原地坐地 | 允许合法的肢体几何贴阶与刮擦借力攀爬 |
-| `power_distribution_variance_l2` | 四肢机械功耗方差惩罚 | **`-5.0e-5`** | `[-1.0e-5, -1.0e-4]` | **高** | 限制单侧肢体在极端越障时的自救爆发力 | 左右后腿做功比 $> 2.0$，单缸推车走直线严重跑偏 |
-| `bilateral_hip_symmetry_equivariance`| 左右对称等变镜像场惩罚 | **`-0.20`** | `[-0.10, -0.35]` | **高** | 锁死髋关节侧向顺应性，侧向受扰动极易横向翻车 | 八字脚外甩严重，左右腿步幅不对称导致开环漂移 |
-| `straight_ang_vel_z` | 直行偏航角速度门控惩罚 | **`-0.25`** | `[-0.10, -0.40]` | **中** | 转向灵敏度钝化，大转向指令下响应迟滞 | 直行时轻微左右摇摆晃动，无法维持高精度激光轨迹 |
-| 电机底层刚度 $K_p$ | 关节 PD 位置刚度标称值 | **`25.0 ~ 28.0`** | `[20.0, 32.0]` | **极高** | 足端触地如同钢性弹簧碰撞，机身剧烈高频弹跳 | 支撑相下肢软瘫打滑，登顶最后一步力矩不足后滑 |
-| 电机底层阻尼 $K_d$ | 关节 PD 速度阻尼标称值 | **`0.60 ~ 0.75`** | `[0.50, 1.00]` | **高** | 关节动作粘滞拖沓，高频响应迟缓，发热急剧攀升 | 接触瞬间产生高频抖动共振，足端落地弹跳不收敛 |
+在 `go2_env_cfg.py:304-407` 中，DreamWaQ 构建了全面的动力学域随机化矩阵：
+
+| 物理随机项 | 分布范围 | 触发时机 | 模拟的真实世界物理现象 |
+| :--- | :---: | :---: | :--- |
+| **电机驱动增益 (Motor Strength)** | $[0.9, 1.1]$ | Reset | 电机线圈温升、母线电压跌落引起的力矩波动 |
+| **地面静/动摩擦系数** | $[0.4, 1.25]$ | Startup | 瓷砖、沥青、草地、水泥等不同地面附着力 |
+| **地表恢复系数 (Restitution)** | $[0.0, 0.5]$ | Startup | 地面硬度与弹性反弹差异 |
+| **机身基座附加质量** | $[-0.5, 2.0]\,\text{kg}$ | Startup | 搭载电池老化、外挂激光雷达或计算工控机 |
+| **四肢肢体质量缩放** | $[0.95, 1.05]$ | Startup | 机械加工公差与关节线缆附加质量 |
+| **基座质心偏移 (CoM Offset)** | $X: \pm 1\,\text{cm}, Y: \pm 0.5\,\text{cm}, Z: \pm 0.3\,\text{cm}$ | Startup | 负载安装重心偏差造成的质心不平衡 |
+| **关节零位编码器偏置** | $[-0.035, 0.035]\,\text{rad}$ ($\approx \pm 2^\circ$) | Reset | 实机零位标定误差与磁编零点漂移 |
+| **外力突发扰动 (Push Robot)** | $v_x \in [-0.2, 0.2]\,\text{m/s}, v_y \in [-0.1, 0.1]\,\text{m/s}$ | 10~15s 周期 | 行走过程中被人为踢踹或大风侧向吹拂 |
 
 ---
 
-### 7.3 调参黄金四步法 SOP（The 4-Step Tuning Protocol）
+<a id="ch6"></a>
+## 6. 训练加速黑科技：AdaBoot 自适应速度自举
 
-在针对极限地形或新机器人进行步态调优时，严禁“胡子眉毛一把抓”同时修改所有超参数。必须严格遵循以下四步依赖次序：
+在 `scripts/rsl_rl/dreamwaq/dreamwaq_ppo.py` 中，DreamWaQ 集成了一套专门针对双网络协同优化的核心算法：**AdaBoot (Adaptive Bootstrapping)**。
+
+### 6.1 什么是冷启动困境？（鸡生蛋与蛋生鸡）
+
+在四足强化学习刚初始化的第 0 步：
+1. **Actor 策略是乱扑腾的**：它必须依赖高质量的速度估计 $\hat{\mathbf{v}}$ 才能学会如何追踪期望速度奔跑；
+2. **CENet 估计器也是未经训练的**：它必须依赖机器狗在环境中产生多样化、连贯的步态接触数据，才能学会从时序中解算速度。
+3. **死锁局面**：Actor 看着错误百出的假速度胡乱摔倒；CENet 从一堆摔倒的无效数据中根本学不出速度映射。训练极其容易在初级阶段彻底停滞崩溃。
+
+---
+
+### 6.2 AdaBoot 概率注入机制与自适应退火
+
+AdaBoot 利用统计学中的**离散变异系数（Coefficient of Variation, CV）**，根据训练集数的累积奖励波动自适应调整：
+
+```
+                    累积集数奖励历史 R (窗口大小 2048)
+                                │
+                                ▼
+               计算均值 μ_R 与标准差 σ_R (无偏估计)
+                                │
+                                ▼
+                       CV = σ_R / (|μ_R| + ε)
+                                │
+                                ▼
+                       p = 1.0 - tanh(CV)
+                                │
+          ┌─────────────────────┴─────────────────────┐
+          ▼ 当 CV 极大 (训练初期剧烈震荡)                ▼ 当 CV 极小 (训练后期平稳收敛)
+      tanh(CV) -> 1                                tanh(CV) -> 0
+      p -> 0.0                                     p -> 1.0
+  以 100% 概率将真实线速度                      以 100% 概率将 CENet 估计速度
+  v_true 喂给 Actor (保底加速收敛)             v_hat 喂给 Actor (实现完全解耦自立)
+```
+
+- **数学公式推导**（[`dreamwaq_ppo.py:137-140`](file:///home/rum/dreamwaq_lab/scripts/rsl_rl/dreamwaq/dreamwaq_ppo.py#L137-L140)）：
+  $$\text{CV} = \frac{\sigma_R}{|\mu_R| + \epsilon}$$
+  $$p_{\text{adaboot}} = 1.0 - \tanh(\text{CV})$$
+  并在 Actor 构建输入时通过伯努利分布掩码选择（[`dreamwaq_actor_critic.py:383-388`](file:///home/rum/dreamwaq_lab/scripts/rsl_rl/dreamwaq/dreamwaq_actor_critic.py#L383-L388)）：
+  $$\mathbf{v}_{\text{actor}} = \begin{cases} \hat{\mathbf{v}}_{\text{CENet}}, & \text{with probability } p_{\text{adaboot}} \\ \mathbf{v}_{\text{true}}, & \text{with probability } 1 - p_{\text{adaboot}} \end{cases}$$
+
+- **物理直觉**：
+  就像教小孩子骑自行车：
+  - 前期小孩子还不会平衡（奖励波动极大），大人在后面用手稳稳扶着后座（注入真实速度真值 $\mathbf{v}_{\text{true}}$），保证车子不倒并跑起来；
+  - 随着小孩子跑得越来越稳（奖励方差逼近于 0），大人悄悄松手，小孩子完全依赖自身的内耳前庭感官（CENet 估计器）独立骑行！
+
+---
+
+### 6.3 Detach 梯度截断与双独立优化器架构
+
+在强化学习中，一个极易被忽视但极其致命的陷阱是：**如果让 PPO 的 Actor 损失梯度反向传播给特征编码器，表征空间会迅速崩溃！**
+
+#### 为什么必须 Detach？
+- PPO 的策略更新伴随着探索性噪声和熵正则化（Entropy），其梯度方向在每个更新步都充满了剧烈的高频随机波动；
+- CENet 的本质是一个高精度的物理参数估计器与自编码器，它需要平稳、沉着的均方误差（MSE）梯度来勾勒物理接触流形；
+- 如果允许 PPO 的 Actor 损失反传到 CENet，Actor 就会“投机取巧”——修改隐变量分布让当前动作看起来优势更大，从而彻底摧毁 CENet 对线速度和下一步状态的客观物理拟合！
+
+#### 源码级硬隔离机制：
+1. **输入 Detach**（[`dreamwaq_actor_critic.py:389-393`](file:///home/rum/dreamwaq_lab/scripts/rsl_rl/dreamwaq/dreamwaq_actor_critic.py#L389-L393)）：
+   ```python
+   if self.training and self.detach_cenet_actor_input:
+       actor_velocity = actor_velocity.detach()
+       actor_latent = actor_latent.detach()
+   ```
+2. **参数与优化器完全独立**（[`dreamwaq_ppo.py:63-68`](file:///home/rum/dreamwaq_lab/scripts/rsl_rl/dreamwaq/dreamwaq_ppo.py#L63-L68)）：
+   ```python
+   # PPO 优化器：只管 actor, critic, log_std
+   self.optimizer = optim.Adam(self.rl_parameters, lr=self.learning_rate)
+   # CENet 优化器：独立维护专用的 Adam 优化器与独立学习率 (默认 1e-3)
+   self.cenet_optimizer = optim.Adam(self.cenet_parameters, lr=float(vae_learning_rate))
+   ```
+3. **两阶段时钟步进**（[`dreamwaq_ppo.py:267-285`](file:///home/rum/dreamwaq_lab/scripts/rsl_rl/dreamwaq/dreamwaq_ppo.py#L267-L285)）：
+   - 在每个 Mini-batch 中，首先用辅助损失（速度 + 重构 + KL）更新 `cenet_optimizer`；
+   - 随后以 `torch.no_grad()` 刷新缓存的特征；
+   - 最后才计算 PPO 损失并更新 `optimizer`。
+
+---
+
+<a id="ch7"></a>
+## 7. 避坑红线复盘：DreamWaQ 现有配置与越障断层分析
+
+在将 DreamWaQ 用于复杂障碍物（如 10cm 连续台阶）之前，必须从动力学角度剖析现有奖励势场的局限性。
+
+<a id="sec-7-1"></a>
+### 7.1 现有配置中的 W4 致命雷区（水平与恒高约束）
+
+在 `go2_env_cfg.py:426-441` 中，DreamWaQ 默认激活了以下两项：
+```python
+flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-0.2)
+base_height_relative_l2 = RewTerm(func=mdp.base_height_relative_l2, weight=-0.5, ...)
+```
+
+#### 物理碰撞致命分析（对照 [agent.md](file:///home/rum/isaac/agent.md) 红线 W4）：
+1. **翻越楼梯的自然物理法则**：
+   - 机器狗上台阶时，由于前腿踏在更高平面，机身重心必须向后转移，全身呈现出 **15°~25° 的自然上扬仰角（Pitch Angle）**；
+   - 随着连续攀爬，机身在世界坐标系下的绝对高度必须**持续递增**。
+2. **现有惩罚造成的灾难**：
+   - `flat_orientation_l2` 会强迫机器人机身保持水平，逼迫 Actor 在台阶前通过折叠大腿深蹲来把机头压平；
+   - `base_height_relative_l2` 强迫机身底盘距离局部地表恒定 $0.35\,\text{m}$，上坡时机器狗为了维持高度，会被惩罚强行按在地表上；
+   - 两者叠加，直接导致**底盘重重卡在第一、二阶台阶的棱角上，电机发热托底，随后整机向后翻滚摔倒！**
+   - **生产铁律**：若要越障，**两者的权重必须彻底清零 (`weight=0.0`)**。
+
+---
+
+<a id="sec-7-2"></a>
+### 7.2 越障反射缺失分析（自适应净空与立面逃逸）
+
+查看 `go2_env_cfg.py:484-537` 可以发现：
+```python
+foot_clearance_reward = RewTerm(..., weight=0.0)
+terrain_relative_foot_clearance_l1 = RewTerm(..., weight=-0.0)
+paper_foot_clearance_l2 = RewTerm(..., weight=-0.0)
+foot_swing_height_l2 = RewTerm(..., weight=0.0)
+```
+所有足端净空约束全为 0！
+
+- **缺少自适应安全净空**：
+  在平地上狗子只需抬脚 3cm 即可优雅奔跑；但在 10cm 楼梯前，脚尖必须抬高至 10cm 以上。缺少俯仰角感知的自适应净空门限，狗子无法在靠近台阶的一瞬间自动提膝；
+- **缺少剪切力比逃逸反射**：
+  当脚尖正面踢到台阶立面时（$F_{xy} > 3 \cdot F_z$），策略无法将这种撞击感知转换为快速屈膝逃逸反射，只能在原地卡死并发生“二次踩踏”。
+
+---
+
+<a id="sec-7-3"></a>
+### 7.3 从粗糙地面到连续台阶的奖励重构蓝图
+
+后续训练中，若要从平地/粗糙地形升级为越障模型，标准改造路线如下：
+1. **剔除死穴**：清零 `flat_orientation_l2` 与 `base_height_relative_l2`；
+2. **解耦关节自由度**：严禁约束 `thigh` 与 `calf`，名义姿态仅约束 4 个髋关节侧向摆动；
+3. **注入双核心反射**：引入 `pitch_adaptive_clearance`（动态门限单侧 Hinge）与 `shear_ratio_escape`（剪切力逃逸动力）。
+
+---
+
+<a id="ch8"></a>
+## 8. 核心代码拓扑与精读
+
+DreamWaQ 仓库代码收敛于以下核心模块：
+
+```text
+DreamWaQ_Lab/
+├── scripts/rsl_rl/dreamwaq/
+│   ├── dreamwaq_modules.py           # [CENet 网络] Shared Backbone, Velocity Head, Latent VAE, Decoder
+│   ├── dreamwaq_actor_critic.py      # [Actor-Critic] 45维时序重排、64维输入拼接、非对称 Critic
+│   ├── dreamwaq_ppo.py               # [PPO 算法] CENet 独立优化器、live_mask 过滤、AdaBoot 调度
+│   ├── dreamwaq_exporter.py          # [模型导出] 融合 CENet 与 Actor 的端到端 JIT/ONNX 导出工具
+│   ├── inspect_dreamwaq_observations.py # [管线体检] 验证时序切块与张量维度的轻量脚本
+│   └── train_dreamwaq.py             # [训练入口] 注册 DreamWaQ 专用 Runner 与算法
+└── source/dreamwaq_lab/dreamwaq_lab/
+    ├── tasks/manager_based/unitree_go2/dreamwaq/
+    │   ├── go2_env_cfg.py            # [环境主配置] 45 维本体观测拓扑、域随机化、奖励权重与时钟
+    │   └── agents/rsl_rl_dreamwaq_cfg.py # [超参数配置] PPO 学习率、CENet Loss 权重、AdaBoot 开关
+```
+
+---
+
+<a id="ch9"></a>
+## 9. 动手实战与运维 SOP
+
+<a id="sec-9-1"></a>
+### 9.1 观测维度与张量对齐核验 SOP
+
+在任何训练开始前，必须在终端执行快速静态检查，确保张量布局 100% 对齐：
+
+```bash
+# 激活环境后执行
+python scripts/rsl_rl/dreamwaq/inspect_dreamwaq_observations.py \
+  --task Unitree-Go2-DreamWaQ-Rough \
+  --num_envs 4 \
+  --headless
+```
+
+**验收标准**：
+- `proprio_dim == 45`
+- `history_obs_dim == 225`（5 帧 × 45 维）
+- `actor_input_dim == 64`（3 维速度 + 16 维隐变量 + 45 维当前帧）
+- 终端打印 `[DreamWaQ CENet Debug]` 且无任何维度除不尽报错。
+
+---
+
+<a id="sec-9-2"></a>
+### 9.2 启动无头训练与 TensorBoard 监视
+
+```bash
+# 后台无头启动并行训练（严禁占用 DISPLAY）
+python scripts/rsl_rl/dreamwaq/train_dreamwaq.py \
+  --task Unitree-Go2-DreamWaQ-Rough \
+  --num_envs 4096 \
+  --headless
+```
+
+**TensorBoard 核心健康指标监控看板**：
+1. **`cenet_velocity_loss`**：应在 1000 迭代内从 0.5 快速下降至 0.05 以下；
+2. **`cenet_reconstruction_loss`**：稳定平稳下降，表明隐变量有效拟合了动力学；
+3. **`cenet_kl_loss`**：保持在正常常数区间（通常在 1.0~5.0 之间），不能爆炸至几十，也不能塌陷至 0；
+4. **`adaboot_probability`**：随着训练平稳，曲线应从 0.0 自适应攀升至 0.8~1.0。
+
+---
+
+<a id="sec-9-3"></a>
+### 9.3 回放与端到端模型打包部署
+
+训练完成后，使用回放脚本一键导出部署包：
+
+```bash
+python scripts/rsl_rl/dreamwaq/play_dreamwaq.py \
+  --task Unitree-Go2-DreamWaQ-Rough-Play \
+  --checkpoint /absolute/path/to/model_XXXXX.pt \
+  --num_envs 16 \
+  --headless \
+  --max_steps 1000
+```
+
+该脚本将调用 `dreamwaq_exporter.py`，并在 `exported/` 目录下生成：
+- `policy.pt`：内嵌 CENet 的 LibTorch C++ JIT 模型；
+- `policy.onnx`：标准 ONNX 跨平台模型；
+- `deploy.yaml`：包含 45 维观测缩放与关节顺序的自包含硬件配置文件。
+
+---
+
+<a id="ch10"></a>
+## 10. 开源实战进阶：LeggedGym-Ex 多仿真器体系与 24 维显式复合估计
+
+> **源码仓库直达**：[`/home/rum/LeggedGym-Ex`](file:///home/rum/LeggedGym-Ex)（软链接工作区：[LeggedGym-Ex](file:///home/rum/isaac/LeggedGym-Ex)）  
+> **开源上游链接**：[lupinjia/LeggedGym-Ex](https://github.com/lupinjia/LeggedGym-Ex)
+
+针对社区开源前沿，我们引入了 `LeggedGym-Ex` 框架。与之前轻量级 `dreamwaq_lab` 相比，该开源实现深度还原了 DreamWaQ 论文的原始复合表征设计，并原生兼容 IsaacLab。
+
+### 10.1 24 维显式估计 + 16 维隐变量复合架构
+
+在 `LeggedGym-Ex/legged_gym/envs/base/legged_robot_dreamwaq.py` 中，显式估计头被大幅增强：
+
+```text
+显式估计头 (24维):
+├── 机身线速度 (3维): [vx, vy, vz]
+├── 全身关键部件碰撞接触状态 (17维):
+│   ├── 4 个髋关节 (Hips)
+│   ├── 4 个大腿 (Thighs)
+│   ├── 4 个小腿 (Calfs)
+│   ├── 4 个足端 (Feet)
+│   └── 1 个机身底盘 (Base)
+└── 4 足相对地形净空高度 (4维): foot_pos_z - mean(height_around_feet)
+
+隐式 VAE 潜空间 (16维):
+└── 对角高斯隐变量 z ~ N(mu, sigma^2) (承载地面摩擦、未建模阻抗与外力扰动)
+
+Actor 策略网络真实输入 (85维):
+└── [ 45维当前本体感知,  24维显式物理状态估计,  16维隐变量 z ]
+```
+
+- **物理增强价值**：
+  相比单测 3 维速度，网络同时预估四肢与身体各个部位的接触受力状态和脚尖净空，使得机器狗在盲走踩坑或发生肢体刮蹭时具备更加迅捷的肌肉代偿反应。
+
+---
+
+### 10.2 多仿真器抽象与 IsaacLab 适配原理
+
+`LeggedGym-Ex` 设计了一层统一的仿真器抽象层 `legged_gym/simulator/`：
+- 通过环境变量 `export SIMULATOR=isaaclab` 自动激活 `IsaacLabSimulator`；
+- 利用 `isaaclab.app.AppLauncher` 无头启动 Omniverse 渲染核心与 PhysX 5 GPU 刚体物理解算器；
+- 保持了经典 `legged_gym` 简洁易读的配置接口，同时享受 IsaacLab 的 GPU 并行张量吞吐性能。
+
+---
+
+### 10.3 训练启动与导出部署 SOP
+
+#### 1. 启动训练命令：
+```bash
+export SIMULATOR=isaaclab
+PYTHONPATH=/home/rum/LeggedGym-Ex:/home/rum/LeggedGym-Ex/rsl_rl:$PYTHONPATH \
+/home/rum/env_isaaclab/bin/python /home/rum/LeggedGym-Ex/legged_gym/scripts/train.py \
+  --task go2_dreamwaq \
+  --num_envs 3200 \
+  --headless
+```
+
+#### 2. 模型导出命令：
+训练完成后通过 `play.py` 调用内部集成的 `PolicyExporterWaQ`（[`legged_gym/utils/helpers.py:265`](file:///home/rum/LeggedGym-Ex/legged_gym/utils/helpers.py#L265)），将 `(obs, obs_history) -> actions` 完整推理图固化为 TorchScript JIT 模型与 ONNX。
+
+---
+
+---
+
+<a id="ch11"></a>
+## 11. dreamwaq_lab 原生二次开发实战（平地丝滑 + 温和渐进爬楼梯落地版）
+
+> **开发定位**：完全立足于原生 `dreamwaq_lab` 代码体系，不引入外部黑盒。通过原生奖励重构与温和阶梯课程，一举攻克四足机器人“平地丝滑不颠簸”与“连续越障爬楼梯”两大核心场景。
+
+### 11.1 核心动力学与奖励重构四部曲
+
+1. **姿态精准解耦（约束 Roll，释放 Pitch）**：
+   - 传统 `flat_orientation_l2` 惩罚 $g_x^2 + g_y^2$，逼迫机器人在上坡爬楼时水平匍匐，导致后滚翻踩空。
+   - 新增原生算子 [`roll_orientation_l2`](file:///home/rum/dreamwaq_lab/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/mdp/rewards.py#L1477)：只惩罚 $g_y^2 \approx \sin^2(\text{roll})$（weight=-0.2）。
+   - **效果**：平地保持身姿端正挺拔，绝不左右侧晃；爬楼梯时 Pitch 仰角（$15^\circ \sim 25^\circ$）完全不受惩罚，重心自然顺应台阶坡度上推。
+
+2. **单边运动学足端净空（`paper_foot_clearance_l2_new`）**：
+   - 彻底废除存在垂直立面跳变伪影的扫描器复杂投影；
+   - 激活论文原版单边抬腿算子（`target_height=0.05`，`weight=-0.05`）：只惩罚抬升不足，爬阶时深屈膝高抬腿绝不扣分。平地步态紧凑不拖地，上阶自然大提膝。
+
+3. **排除小腿碰撞红线（移除 calf 惩罚）**：
+   - 将 [`undesired_contacts`](file:///home/rum/dreamwaq_lab/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/dreamwaq_env_cfg.py) 的检测部位从 `[".*thigh", ".*calf"]` 修正为仅 `[".*thigh"]`。
+   - 小腿擦蹭台阶棱角是动物翻越障碍的正常物理交互，移出后彻底消除“遇阶畏缩停步”现象。
+
+4. **机身局部高度软化**：
+   - 将 `base_height_relative_l2` 权重由硬性的 -1.0 软化为 -0.3，使机身高度在爬楼梯时能够灵活自适应踏面高度变化。
+
+---
+
+### 11.2 温和渐进阶梯课程（Gentle Stair Curriculum）
+
+在 [`dreamwaq_env_cfg.py`](file:///home/rum/dreamwaq_lab/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/dreamwaq_env_cfg.py) 中重构地形生成器：
+- **台阶范围收敛**：`step_height_range = (0.03, 0.15)`，摒弃 25cm 超限台阶，锁定在 3cm ~ 15cm 黄金渐进区间；
+- **标准踏面几何**：踏面宽度锁定 `step_width = 0.30m`，两端平台 `platform_width = 3.0m`；
+- **课程门控升级**：依托 `terrain_levels_vel_new`，速度指令达成度 $\ge 90\%$ 后方可解锁下一级难度台阶，保证平地先学稳、再平滑攻坚越障。
+
+---
+
+### 11.3 3000 轮全量训练实测收敛指标
+
+- **训练任务与脚本**：[`/home/rum/dreamwaq_lab/run_train.sh`](file:///home/rum/dreamwaq_lab/run_train.sh)（1024 envs，耗时 1 小时 51 分钟，总步数 73,728,000）
+- **日志与检查点路径**：[`logs/rsl_rl/unitree/unitree_go2_dreamwaq_rough/2026-10-02_20-18/`](file:///home/rum/dreamwaq_lab/logs/rsl_rl/unitree/unitree_go2_dreamwaq_rough/2026-10-02_20-18/)
+  - `model_2999.pt`（最终黄金检查点，6.3 MB）
+  - TensorBoard 事件文件：`events.out.tfevents.1790943524.rum.119617.0`
+- **关键收敛指标（第 2999 轮）**：
+  - **总奖励（Mean Reward）**：从初始 `-0.56` 稳健攀升至 **`+33.80`**
+  - **单轮存活率（Survival Rate）**：平均回合长度 **`990.91 / 1000`**（存活率 **`99.1%`**，正常超时达 `98.91%`，机身摔地跌倒率彻底归零 `0.0000`）
+  - **线速度跟踪奖励 (`track_lin_vel_xy_exp`)**：**`1.5156 / 1.75`**（接近满分）
+  - **偏航角速度跟踪 (`track_ang_vel_z_exp`)**：**`0.6111 / 0.75`**
+  - **CENet 速度预测 MSE 损失**：收敛至 **`0.0180`**（三维线速度估计极其精准）
+  - **CENet 45 维本体干净观测重构损失**：收敛至 **`0.0745`**
+  - **横滚角偏离惩罚 (`roll_orientation_l2`)**：仅 **`-0.0015`**（横滚锁死不侧晃，俯仰自然顺应台阶）
+  - **非法触地惩罚 (`undesired_contacts`)**：**`0.0000`**（彻底解除小腿畏障）
+
+---
+
+### 11.4 部署包导出与端到端交付（JIT / ONNX）
+
+通过 `play_dreamwaq.py` 自动化端到端融合导出，生成完整推理包：
+[`logs/rsl_rl/unitree/unitree_go2_dreamwaq_rough/2026-10-02_20-18/exported/`](file:///home/rum/dreamwaq_lab/logs/rsl_rl/unitree/unitree_go2_dreamwaq_rough/2026-10-02_20-18/exported/)
+
+- **`policy.pt`**（1.1 MB）：C++ LibTorch / JIT 格式（集成 CENet + Actor，输入 `[1, 45]` 与 `[1, 225]`，输出 `[1, 12]` 目标关节偏置）
+- **`policy.onnx`**（937 KB）：通用 ONNX 格式（支持 ONNXRuntime / TensorRT）
+- **`deploy_bundle_2026-10-02_20-18/`**：包含 `deploy.yaml` 契约配置、`golden_io.npz` 字节级验证数据及 `sha256.txt` 校验和，与 Python 端推理误差严格为 **`0.000000e+00`**。
+
+---
+*文档更新日期：2026-10-02 | 维护状态：dreamwaq_lab 平地与爬楼梯 3000 轮训练大功告成，全量部署包已归档*
+
+---
+
+<a id="ch12"></a>
+## 12. 四大开源复刻成功案例全景对比与技术归因手册
+
+<a id="sec-12-1"></a>
+### 12.1 四大开源复刻项目网址与资产清单
+
+针对开源社区中针对 DreamWaQ 架构的成功复刻方案，已全面完成代码走查、权重提取与本地镜像归档：
+
+| 序号 | 官方开源网址 | 作者 | 目标机型与核心场景 | 本地镜像绝对路径 | 核心预训练资产与技术特征 |
+| :---: | :--- | :--- | :--- | :--- | :--- |
+| **1** | [Manaro-Alpha/DreamWaQ](https://github.com/Manaro-Alpha/DreamWaQ) | Manaro-Alpha | Unitree Go1 连续大台阶 | [`/home/rum/reference_repos/Manaro-Alpha_DreamWaQ`](file:///home/rum/reference_repos/Manaro-Alpha_DreamWaQ) | **开源社区复现鼻祖**：产出标志性 `DwaQ_stairs.gif`（攀爬陡峭楼梯）。其 `feet_air_time` 极微（仅 0.1），无高斯抬腿死锁。 |
+| **2** | [WaxberryS/DreamWaq_train_go2](https://github.com/WaxberryS/DreamWaq_train_go2) | WaxberryS | Unitree Go2 翻越 15cm 台阶 | [`/home/rum/DreamWaq_train_go2`](file:///home/rum/DreamWaq_train_go2) | **两阶段课程训练法**：平地 1500 轮定型高频对称小跑，第二阶段拆除姿态约束接入 Trimesh 15cm 楼梯训 3500 轮。彻底清零 `feet_air_time=0.0`。 |
+| **3** | [WaxberryS/DreamWaQ-sim2sim_go2](https://github.com/WaxberryS/DreamWaQ-sim2sim_go2) | WaxberryS | Unitree Go2 MuJoCo 真实 Sim2Sim | [`/home/rum/reference_repos/DreamWaQ-sim2sim_go2`](file:///home/rum/reference_repos/DreamWaQ-sim2sim_go2) | **MuJoCo 即插即用部署套件**：内含完整键盘交互控制脚本。**内嵌成功预训练权重**：[`policies/dreamwaq/go2/policy_dwaq.pt`](file:///home/rum/reference_repos/DreamWaQ-sim2sim_go2/policies/dreamwaq/go2/policy_dwaq.pt)（1.1 MB，JIT 格式，输入 `[1, 270]`）。 |
+| **4** | [yusongmin1/Dreamwaq](https://github.com/yusongmin1/Dreamwaq) | yusongmin1 | 山猫 M20 轮足 / Go2 特技 | [`/home/rum/reference_repos/yusongmin1_Dreamwaq`](file:///home/rum/reference_repos/yusongmin1_Dreamwaq) | **实物部署落地案例**：产出 `m20_deploy.gif` 真实路面高速奔跑。内含 18000 轮黄金检查点 `model_18000.pt` 与端到端导出 `policy_dwaq.onnx`。 |
+| **5** | [ShengqianChen/DreamWaQ_Go2W](https://github.com/ShengqianChen/DreamWaQ_Go2W) | ShengqianChen | Unitree Go2-W (轮足实车) | 外部索引已归档 | **轮足实机落地标杆**：DreamWaQ 驱动 Go2W 实车通过草地、连续台阶、碎石与独木桥，针对轮足运动学优化奖励与训练稳定性。 |
+| **6** | [yusongmin1/My_unitree_go2_gym](https://github.com/yusongmin1/My_unitree_go2_gym) | yusongmin1 | Unitree Go2 多技能集锦 | 外部索引已归档 | **Go2 全算法统一百宝箱**：原生集成标准 PPO、DreamWaQ、AMP、CTS，动态调度 12 项任务（包含 `go2_dreamwaq`、小跑、翻转、倒立等）。 |
+
+---
+
+<a id="sec-12-2"></a>
+### 12.2 四大工程核心技术参数与奖励配置横向对比
+
+通过深入源码比对四大成功案例与早期出现跛行/高频抖动的失败配置，关键超参数与奖励函数映射如下：
+
+| 参数项 / 奖励项 | 早期失败/抖动配置 | Manaro-Alpha (Go1) | WaxberryS (Go2 训练) | yusongmin1 (M20 实机) | 物理本质与设计意图 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`feet_air_time`** | **`+1.0`（致命错误）** | **`0.1`** | **`0.0`（未启用/彻底移除）** | **`0.0`（未启用）** | **单腿滞空套利惩罚**：无 CPG 先验时，高正向奖励必致单腿挂空 $1.0\text{s}$、三足点地跛行。 |
+| **`foot_clearance` 形式** | 双边高斯钟形曲线（-0.05） | 注释未用（`# -0.01`） | 机身系单边位移惩罚（-0.01） | 未启用 | **避免抬腿反向惩罚**：双边高斯在足端高于目标时倒扣分引发 50Hz 剧烈颤振；单边门限只罚拖地。 |
+| **姿态惩罚 (`orientation`)** | 多重死锁（`flat=-0.5, pitch=-0.5, roll=-0.3`） | 单一 `orientation = -0.2` | 单一 `orientation = -0.2` | `orientation = -0.5` | **允许 Trot 自然起伏**：对角小跑步态必然伴随微幅俯仰/横滚摆动，过度约束使四肢僵化爬行。 |
+| **`ang_vel_xy`** | `-0.20` ~ `-0.50` | `-0.05` | `-0.05` | `-0.05` | 仅做轻微阻尼抑制共振，绝不掐死动态平衡。 |
+| **`power_distribution`** | 未启用 | `-1.0e-5` | `-1.0e-5` (方差约束) | 未启用 | 强制四腿对称负载均衡，瓦解单侧腿拖行偷懒。 |
+| **`clearance_height_target`**| 无（扫描高度） | 未用 | **`-0.18 m` (机身局部坐标)** | 未用 | 摆动相足端高度偏离机身基准 -0.18m 且有侧向速度时惩罚，尺度轻微（-0.01）。 |
+| **训练课程体系** | 单一粗糙地形硬冲 3000 轮 | 渐进高度楼梯 | **两阶段课程（平地 1500 轮 + 楼梯 3500 轮）** | 渐进坡道与障碍 | 先在平地建立高频对称节律与准确线速度估计，再拆除名义姿态约束攻坚台阶。 |
+
+---
+
+<a id="sec-12-3"></a>
+### 12.3 为什么早期 DreamWaQ 走得烂？四大物理死穴深度归因
+
+根据物理仿真动力学与优化曲面分析，早期版本走得像“跛脚鸭/三腿爬行/速度脉冲”的根本原因在于四大配置死穴的非线性耦合：
 
 ```mermaid
 flowchart TD
-    Step1["步骤 1：几何运动学与前瞻先验到位<br>(0.3s 前瞻雷达 + Landing Gate + 踏面深跨偏置)"] --> Step2["步骤 2：切除一切假死接触阻尼与碰撞黑名单<br>(soft_contact=0, undesired_contacts=0)"]
-    Step2 --> Step3["步骤 3：平滑姿态门控与等变对称洗直<br>(Pitch门控过渡 + 功耗均摊 variance=-5e-5)"]
-    Step3 --> Step4["步骤 4：递进释放指令速度域与地貌难度<br>(0.5m/s稳态登顶 -> 0.2~1.2m/s全速全向盲走)"]
+    A["feet_air_time = 1.0 (正向无上限)"] -->|无相位钟引导| B["策略套利: 单腿悬空1.2秒, 三腿支撑"]
+    C["双边高斯 foot_clearance"] -->|足端抬高即扣分| D["50Hz 高频空中抽搐与打颤"]
+    E["多重姿态刚性锁 (Pitch+Roll+Flat)"] -->|压制二拍小跑起伏| F["四肢无法伸展, 退化为匍匐爬行"]
+    G["缺乏功耗方差约束"] -->|支撑腿负荷失衡| H["前肢拖拽、步幅严重左右不对称"]
+    
+    B --> I["综合病症: 跛行跳跃 + 速度从0.42到0.60m/s周期性顿挫抽搐"]
+    D --> I
+    F --> I
+    H --> I
 ```
 
-#### 步骤 1：几何运动学与前瞻先验到位（Geometry & Clearance First）
-- 部署 `dual_bounded_pitch_adaptive_foot_clearance_l1`；
-- 配置 $0.3\text{s}$ 行程的前瞻射线窗口（$dx \in [0.05, 0.40]\text{m}$），提前感知高度差；
-- 植入下落保护门控：`landing_gate = torch.clamp((foot_vel_z + 0.15) / 0.20, min=0.0, max=1.0)`；
-- 目标净空高度对齐：平地 $22\text{mm}$，台阶 $160\text{mm}$；超额惩罚倍率设为 $3.0$。
+1. **死穴一：`feet_air_time = 1.0` 在无时钟引导下的套利坍缩**
+   - 在有 CPG（中枢模式发生器）的算法中，滞空奖励只在指定的摆动相位窗口结算；
+   - 而 DreamWaQ 是纯本体感觉端到端策略，没有显式相位钟。当赋予 `feet_air_time = 1.0` 的巨额正奖励时，RL 探索迅速发现：“将左后腿或右前腿常态化高悬空中不落下，三条腿在地上支撑蹭行，就能持续榨取大量滞空分”；
+   - 结果导致严重的非对称步态（单腿挂空、三腿爬行），身体因支撑多边形突变而出现周期性起伏与速度顿挫。
+   - **解法**：学习 WaxberryS 与 Qinzx03，彻底将 `feet_air_time` 置为 0 或移除，改用足端支撑/拖地惩罚（`feet_regulation`）与对角节律自然成型。
 
-#### 步骤 2：彻底切除一切假死接触阻尼（Eliminate Artificial Dampings）
-- **铁律检查**：
-  ```python
-  rewards.soft_contact_velocity_damping.weight = 0.0
-  rewards.undesired_contacts.weight = 0.0
-  rewards.feet_contact_velocity_z.weight = 0.0
-  ```
-- 只要有任何一项非零，网络必在第一阶立面畏缩假死！必须将碰撞能量吸收交由电机物理阻尼（$K_d \approx 0.6 \sim 0.75$）与力矩惩罚 `joint_power` 自然承担。
+2. **死穴二：双边高斯 `foot_clearance` 诱发的 50Hz 高频空中打颤**
+   - 早期设计的双边高斯公式为：
+     $$\text{reward} = \exp\left(-\|v_{xy}\| \cdot \frac{(z_{\text{foot}} - z_{\text{target}})^2}{\sigma^2}\right)$$
+   - 该公式在足端低于目标时惩罚拖地，**但在足端高于目标（例如大跨步抬起 8cm 时）同样剧烈扣分**；
+   - 策略在摆动相中试图抬腿跨步，却在瞬间被高斯惩罚压回，下一帧又因拖地被推起，导致关节电机在 50Hz 策略时钟下以极限角加速度往复振荡，表现为肉眼可见的“足端触电式抖动”。
+   - **解法**：采用 WaxberryS 的机身系轻量偏差惩罚（$-0.01 \cdot \|v_{\text{lat}}\| \cdot (z_{\text{body}} - z_{\text{target}})^2$），或单边只惩罚抬升不足的 `terrain_relative_foot_clearance_l1`（只惩罚低于 6cm，抬高完全不扣分）。
 
-#### 步骤 3：平滑姿态门控与等变对称洗直（Equivariance & Gating Shaping）
-- 引入左右等变镜像惩罚（`-0.20`）与功耗方差惩罚（`-5.0e-5`），确保四肢在蹬阶过程中受力对称；
-- 姿态角速度惩罚 `ang_vel_xy_l2` 严格压低至 `-0.05`，释放俯仰摆动自由度，允许机器人像山羊一样前胸上扬蓄势借力；
-- 偏航角速度刚性锁 `straight_ang_vel_z` 设为 `-0.25`，只在直行时锁死，转向时自动释放。
+3. **死穴三：多轴姿态刚性重锁扼杀 Trot 步态动能**
+   - 四足机器人的 2-beat Trot（对角小跑）在物理本质上是动力学倒立摆的交替倾侧，机身必然存在约 $1^\circ \sim 3^\circ$ 的自然横滚与俯仰微幅振荡；
+   - 堆叠 `flat_orientation=-0.5`, `pitch_orientation=-0.5`, `roll_orientation=-0.3`, `base_height=-0.5` 构成了严格的几何铁笼。机器人为了不触碰姿态扣分惩罚，被迫锁死腰跨，只能采取极其保守的小碎步甚至三足静态爬行。
+   - **解法**：仅保留单一温和的全局重力投影约束 `flat_orientation_l2 = -0.20`（或仅锁 Roll），将 Pitch 自由度释放给机身与地形自适应匹配。
 
-#### 步骤 4：递进释放指令速度域与地貌难度（Curriculum Progression）
-- **第 1 阶段（稳态定型）**：锁死速度指令 $v_x = 0.6\text{ m/s}$，$v_y = 0.0$，$w_z = 0.0$，台阶难度限制在 $10 \sim 12\text{cm}$，跑 150 轮让策略建立稳定的爬坡相位；
-- **第 2 阶段（极限攻坚）**：将台阶提升至 $15 \sim 16\text{cm}$，保持直行指令不变，训练 100 轮攻克极限提膝；
-- **第 3 阶段（全速域泛化）**：放开指令空间至 $v_x \in [0.2, 1.2]\text{ m/s}$，引入 $w_z \in [-0.5, 0.5]\text{ rad/s}$ 转弯扰动，完成最终大一统策略交付。
+4. **死穴四：无功耗均衡约束导致肢体负荷不对称**
+   - 缺乏四腿能量分配约束时，网络会随机收敛到依靠某两只强力腿“硬拖”整机前行；
+   - 引入 `power_distribution_variance = -1.0e-5` 后，任何一条腿偷懒或过载都会产生惩罚，逼迫四个足端以均匀的占空比和力矩分担负荷，自然催生出对称、饱满的跑步动作。
 
 ---
 
-### 7.4 TensorBoard 监控曲线特征与病态快速诊断
+<a id="sec-12-4"></a>
+### 12.4 下一步工程落地路线与实施方案
 
-在训练过程中，通过 TensorBoard 观察以下五组核心指标，可在 30 轮内精准诊断训练状态，无需等待数小时后肉眼排查：
+结合四大开源工程经验与当前 `dreamwaq_lab` 已完成的清洗状态（17 个健康奖励项、0 冲突、5/5 维度校验通过），下一步落地提供两条清晰的技术路径：
 
-```
-+----------------------------------------------------------------------------------------------------+
-|                                    TENSORBOARD 诊断判定图谱                                         |
-+------------------------------------+----------------------------------+----------------------------+
-| 指标名称 (Metric)                  | 健康曲线形态 (Healthy)           | 病态曲线形态 (Pathological)|
-+------------------------------------+----------------------------------+----------------------------+
-| 1. Episode Length                  | 稳步爬升并饱和在 950~1000 步     | 断崖式跌落至 < 200 步      |
-|    (存活步长)                      | (机器人 0 摔倒连续登顶全地形)    | (第一阶卡死超时或立面撞翻) |
-+------------------------------------+----------------------------------+----------------------------+
-| 2. Reward / clearance_l1           | 遇台阶产生适度负峰(-0.02~-0.05)，| 长期饱和在 -0.20 深度扣分，|
-|    (足端净空奖励)                  | 随着提膝适应在 200 轮内收窄 60%  | 曲线呈平直底线，毫无改善   |
-+------------------------------------+----------------------------------+----------------------------+
-| 3. Loss / vel_estimator            | 平滑下降并稳定收敛在 0.02~0.04   | 震荡发散或突增至 > 0.20    |
-|    (CENet 速度预测头)              | (本体感知精准，无速度倒挂)       | (感知崩溃，把前行误认为后退)|
-+------------------------------------+----------------------------------+----------------------------+
-| 4. Policy / approx_kl              | 始终紧凑收敛在 0.005 ~ 0.015     | 频繁尖峰突破 0.05 ~ 0.10   |
-|    (PPO 策略更新步长)              | (策略微调平滑，无突变灾难遗忘)   | (突触暴震，步态瞬间瓦解毁坏)|
-+------------------------------------+----------------------------------+----------------------------+
-| 5. Metric / joint_power            | 平地 25~40W，台阶段 65~95W 阶跃，| 登阶瞬间尖峰突破 > 250W，  |
-|    (关节机械功耗)                  | 登顶后平稳回落                   | 或衰减至 < 10W (电机卸力停摆)
-+------------------------------------+----------------------------------+----------------------------+
-```
+#### 方案 A：立足当前 IsaacLab 原生环境，执行 1500 轮 Stage 1 平地训练
+- **执行方式**：在 [`dreamwaq_lab`](file:///home/rum/dreamwaq_lab) 中以已修复的 `dreamwaq_env_cfg.py` 启动训练；
+- **配置特点**：彻底移除 `feet_air_time` 与双边高斯抬腿，启用 `terrain_relative_foot_clearance_l1 = -0.10` + `feet_regulation = -0.50` + `power_distribution_variance = -1.0e-5`；
+- **验证闭环**：训练结束后通过 MuJoCo 自动化 20 秒遥测质检脚本，产出硬指标（速度跟踪误差、功耗方差、步态对称性）。
+
+#### 方案 B：先行挂载 WaxberryS 开源预训练黄金权重，进行 MuJoCo Sim2Sim 零成本对标
+- **执行方式**：直接运行本地镜像中的 [`reference_repos/DreamWaQ-sim2sim_go2/scripts/dreamwaq_go2.py`](file:///home/rum/reference_repos/DreamWaQ-sim2sim_go2/scripts/dreamwaq_go2.py)；
+- **核心价值**：其权重 [`policy_dwaq.pt`](file:///home/rum/reference_repos/DreamWaQ-sim2sim_go2/policies/dreamwaq/go2/policy_dwaq.pt) 是经过 5000 轮两阶段完整收敛的 Go2 现实成功模型，可立即通过物理遥测直观感受 100% 达标的 DreamWaQ 真实运动轨迹、足端高度曲线与电机平滑度，作为后续自我训练的“黄金质检基准”。
 
 ---
+*文档更新日期：2026-10-05 | 维护状态：四大开源成功复刻案例全景归档 + 物理死穴机理分析完毕*
 
-### 7.5 即插即用生产级代码落地模板（Production-Ready Implementation）
 
-在后续训练自己的四足机器人时，可直接将以下经过完整实战检验的奖励实现与配置类复制并集成：
-
-#### 1. 奖励函数实现：[`rewards.py`](file:///home/rum/isaac/dreamwaq_lab/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/mdp/rewards.py)
-```python
-def production_stairs_foot_clearance_l1(
-    env: ManagerBasedRLEnv,
-    command_name: str,
-    sensor_cfg: SceneEntityCfg,
-    asset_cfg: SceneEntityCfg,
-    height_sensor_cfg: SceneEntityCfg,
-    flat_target_clearance: float = 0.022,   # 平地磁悬浮目标: 22mm
-    flat_max_clearance: float = 0.028,      # 平地上限锁: 28mm
-    stairs_target_clearance: float = 0.160, # 15cm 台阶高提膝目标: 160mm
-    excess_penalty_scale: float = 3.0,      # 平地超额抬腿严惩倍率
-    contact_threshold: float = 1.0,         # 触地接触力阈值: 1.0 N
-    top_k: int = 8,
-    speed_scale: float = 2.0,
-    lookahead_dx: tuple = (0.05, 0.40),     # 前瞻 0.3 秒射线扫描窗口 (x 轴)
-    lookahead_dy: float = 0.15,             # 扫描横向宽度 (y 轴)
-) -> torch.Tensor:
-    """生产级 15cm 极限台阶攻坚足端净空奖励函数 (带 0.3s 前瞻感知 + 落地保护门控)."""
-    contact_sensor = env.scene.sensors[sensor_cfg.name]
-    height_sensor = env.scene.sensors[height_sensor_cfg.name]
-    asset = env.scene[asset_cfg.name]
-
-    # 1. 摆动相识别：仅对非触地摆动足施加约束
-    contact_forces = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids, :]
-    swing_feet = (torch.norm(contact_forces, dim=-1) <= contact_threshold)
-
-    foot_pos_w = asset.data.body_pos_w[:, asset_cfg.body_ids, :]
-    foot_heights = foot_pos_w[..., 2]
-
-    # 2. 局部地形高度查询
-    sensor_pos_w = height_sensor.data.pos_w
-    sensor_yaw_quat_w = yaw_quat(height_sensor.data.quat_w)
-    foot_pos_rel = quat_apply_inverse(
-        sensor_yaw_quat_w.unsqueeze(1).expand(-1, foot_pos_w.shape[1], -1).reshape(-1, 4),
-        (foot_pos_w - sensor_pos_w.unsqueeze(1)).reshape(-1, 3),
-    ).reshape_as(foot_pos_w)
-    foot_xy = foot_pos_rel[..., :2]
-
-    ray_xy = height_sensor.ray_starts[..., :2]
-    if ray_xy.dim() == 2:
-        ray_xy = ray_xy.unsqueeze(0).expand(env.num_envs, -1, -1)
-    ray_hits_z = height_sensor.data.ray_hits_w[..., 2]
-    valid_rays = torch.isfinite(ray_hits_z)
-
-    # 计算足端垂直下方地形高度
-    dist = torch.where(valid_rays.unsqueeze(1), torch.cdist(foot_xy, ray_xy), torch.full((1,), float("inf"), device=dist.device))
-    nearest_rays = torch.topk(dist, k=min(top_k, dist.shape[-1]), dim=-1, largest=False).indices
-    local_z = torch.gather(ray_hits_z.unsqueeze(1).expand(-1, 4, -1), dim=2, index=nearest_rays)
-    cur_ground_z = torch.where(valid_rays.any(dim=-1).unsqueeze(1), torch.max(local_z, dim=-1).values, foot_heights - flat_target_clearance)
-
-    # 3. 核心前瞻感知：提取足端前方 0.05~0.40m 范围内的最大台阶高差
-    dx_ahead = ray_xy[:, :, 0].unsqueeze(1) - foot_xy[:, :, 0].unsqueeze(2)
-    dy_ahead = ray_xy[:, :, 1].unsqueeze(1) - foot_xy[:, :, 1].unsqueeze(2)
-    ahead_mask = (dx_ahead >= lookahead_dx[0]) & (dx_ahead <= lookahead_dx[1]) & (torch.abs(dy_ahead) <= lookahead_dy) & valid_rays.unsqueeze(1)
-    ahead_z = torch.where(ahead_mask, ray_hits_z.unsqueeze(1).expand(-1, 4, -1), torch.full_like(ahead_mask.float(), -1e4))
-    delta_z_ahead = torch.clamp(torch.max(ahead_z, dim=-1).values - cur_ground_z, min=0.0)
-
-    # 前瞻门控 alpha (遇到 >= 4cm 高差即在 0.3 秒前瞬间拉满提膝)
-    alpha_ahead = torch.clamp((delta_z_ahead - 0.04) / 0.06, min=0.0, max=1.0)
-    pitch_up = -asset.data.projected_gravity_b[:, 0]
-    alpha_pitch = torch.clamp((pitch_up - 0.03) / 0.12, min=0.0, max=1.0).unsqueeze(1)
-    alpha = torch.maximum(alpha_pitch, alpha_ahead)
-
-    # 动态目标净空插值
-    target_clearance = flat_target_clearance + alpha * (stairs_target_clearance - flat_target_clearance)
-    clearance = foot_heights - cur_ground_z
-
-    # 4. 核心落地保护门控 (Landing Gate)：下降准备触地阶段彻底豁免缺额罚分！
-    foot_vel_z = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, 2]
-    landing_gate = torch.clamp((foot_vel_z + 0.15) / 0.20, min=0.0, max=1.0)
-    effective_landing_gate = (1.0 - alpha) * 1.0 + alpha * landing_gate
-
-    shortfall = effective_landing_gate * torch.clamp(target_clearance - clearance, min=0.0)
-    flat_excess = (1.0 - alpha) * torch.clamp(clearance - flat_max_clearance, min=0.0) * excess_penalty_scale
-    error = torch.clamp(shortfall + flat_excess, max=stairs_target_clearance)
-
-    # 水平速度加权与正态激活
-    foot_speed = torch.norm(asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2], dim=-1)
-    speed_weight = torch.tanh(speed_scale * foot_speed)
-    swing_count = swing_feet.sum(dim=1).clamp(min=1)
-
-    return torch.sum(swing_feet.float() * speed_weight * error, dim=-1) / swing_count
-```
-
-#### 2. 环境配置注册：[`dreamwaq_env_cfg.py`](file:///home/rum/isaac/dreamwaq_lab/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/dreamwaq_env_cfg.py)
-```python
-@configclass
-class UnitreeGo2StairMasterEnvCfg(UnitreeGo2DreamWaQStage14UnifiedEnvCfg):
-    """下一代四足机器人 15cm 极限台阶攻坚标准环境配置模板。"""
-
-    def __post_init__(self):
-        super().__post_init__()
-
-        # 1. 激活前瞻自适应净空与落地保护门控
-        self.rewards.terrain_relative_foot_clearance_l1.func = mdp.production_stairs_foot_clearance_l1
-        self.rewards.terrain_relative_foot_clearance_l1.weight = -0.12
-        self.rewards.terrain_relative_foot_clearance_l1.params = {
-            "flat_target_clearance": 0.022,
-            "flat_max_clearance": 0.028,
-            "stairs_target_clearance": 0.160,
-            "excess_penalty_scale": 3.0,
-            "speed_scale": 2.0,
-        }
-
-        # 2. 彻底清空假死接触阻尼与小腿碰撞黑名单
-        self.rewards.soft_contact_velocity_damping.weight = 0.0
-        self.rewards.undesired_contacts.weight = 0.0
-        self.rewards.feet_contact_velocity_z.weight = 0.0
-
-        # 3. 注入等变镜像力场与功耗均衡 (根治跑偏与八字脚)
-        self.rewards.bilateral_hip_symmetry_equivariance_l2.weight = -0.20
-        self.rewards.power_distribution_variance_l2.weight = -5.0e-5
-        self.rewards.straight_ang_vel_z.weight = -0.25
-        self.rewards.flat_heading_error_l2.weight = -0.35
-
-        # 4. 电机底层柔顺度参数校验
-        # 确保 unitree_go2.py 中 Kp=25.0, Kd=0.65，严禁使用过硬刚度
-```
-
----
-
-## 八、 核心战役深度精调手册：CENet 速度感知倒挂与隐空间坍缩根治手册
-
-DreamWaQ（$\beta\text{-VAE}$ 动力学自编码器）之所以能够摆脱 RMA（教师-学生两阶段蒸馏）的繁琐流程，核心就在于其 **CENet（Context Encoder Network）**。CENet 仅凭 5 帧本体感觉历史（IMU 角速度、关节位置与关节速度，共 45 维时序窗口），便在脑内实时解算当前机身的**三维线速度估计值 $\hat{\mathbf{v}}_t$** 与**环境动力学隐向量 $\mathbf{z}_t$**。
-
-然而，一旦辅助任务训练失衡，CENet 会陷入毁灭性的**速度感知反向倒挂**与**隐空间后验坍缩（Posterior Collapse）**。本章深度拆解其动力学数学根因、AdaBoot 自举调优超参矩阵及生产级防倒挂处方。
-
----
-
-### 8.1 CENet 速度感知倒挂机理与后验坍缩病理剖析
-
-```mermaid
-flowchart LR
-    subgraph CENet_Architecture["CENet 核心网络拓扑与梯度流向"]
-        Obs["时序历史观测 H_t (5x45=225维)"] --> Enc["CENet 共享编码器 MLP"]
-        Enc --> Head1["速度预测头 -> v_hat (3维)"]
-        Enc --> Head2["VAE 隐空间分布 -> mu_z, sigma_z (3维)"]
-        Head2 --> LatentSample["隐变量 z_t"]
-        LatentSample --> Dec["Decoder 重构历史"]
-    end
-    Head1 --> ActorInput["Actor 策略输入 [v_hat, mu_z, o_proprio]"]
-    PrivTruth["特权线速度真实值 v_t*"] -. "AdaBoot 动态注入 (早期保护)" .-> ActorInput
-    Head1 -. "L_vel 监督损失 (权重需 3.0~5.0)" .- PrivTruth
-```
-
-#### 1. 速度感知反向倒挂（Velocity Inversion Death Spiral）
-- **现象表征**：
-  - 机器人在仿真或真机中物理上正在以 $+0.6\text{ m/s}$ 向前快步飞驰，但 CENet 估计头输出的 $\hat{v}_x$ 却反向输出 $-0.3\text{ m/s}$（或被死死卡在 $0.0\text{ m/s}$ 附近）；
-  - 策略网络（Actor）发现“我明明收到了 $+0.6\text{ m/s}$ 的前进指令，脑海中的速度感知 $\hat{v}_x$ 却告诉我正在后退（$-0.3\text{ m/s}$）”，于是 Actor 为了赚取速度追踪奖励，立刻发出狂暴的向前加速关节指令；
-  - 实际车体随之疯狂狂飙至极限速度并剧烈仰头后空翻摔毁。
-- **三大致病动力学根因**：
-  1. **速度回归头梯度饥饿（Gradient Starvation）**：
-     - DreamWaQ 的辅助网络总损失函数定义为：
-       $$\mathcal{L}_{\text{CENet}} = c_{\text{recon}}\mathcal{L}_{\text{recon}} + c_{\text{KL}}\mathcal{L}_{\text{KL}} + c_{\text{vel}}\mathcal{L}_{\text{vel}}$$
-     - 其中 $\mathcal{L}_{\text{recon}}$ 需要重构 45 维本体时序历史，数值波动大（通常在 $0.5 \sim 2.0$ 之间）；若官方默认的 $c_{\text{vel}}$ 设为 $1.0$，速度回归损失（通常在 $0.01 \sim 0.05$）反向传播的梯度会被重构损失彻底淹没冲淡，CENet 优先学会了“画画（重构输入）”，而把至关重要的“看车速（速度估计）”抛之脑后。
-  2. **脏自举恶性正反馈（Dirty Bootstrap Feedback Loop）**：
-     - 若未启用 AdaBoot 特权注入，Actor 策略从第 0 步开始就必须强行读取未经校准的随机初态 $\hat{v}_t$。错误的线速度输入导致策略输出疯狂打滑乱蹬；疯狂打滑乱蹬产生的非物理极端关节速度又作为历史数据喂进 CENet，导致 CENet 进一步学出反向拟合，形成不可逆的**“盲人骑瞎马，越骑越发疯”**正反馈死循环。
-  3. **PPO 策略梯度的外生扰动破坏**：
-     - 若 Actor 策略输入中的 $\hat{v}_t$ 和 $\mathbf{z}_t$ 没有执行 `detach()`，PPO 的策略强化学习梯度会直接通过观测反向传播回 CENet 权重中。由于 PPO 梯度包含极高方差，会直接冲垮 CENet 辛苦建立的物理运动学特征表征。
-
-#### 2. 隐空间后验坍缩（Posterior Collapse）
-- **现象表征**：
-  - TensorBoard 中的 `Loss/kl_divergence` 跌至接近 0（$< 0.001$）；隐向量均值 $\boldsymbol{\mu}_z$ 和方差 $\boldsymbol{\sigma}_z$ 变成恒定的常数向量；
-  - 机器人失去对外部撞击、足端摩擦力变化以及台阶地形阻力的感知顺应能力，遇到外力推搡时毫无柔顺抗扰，直接被推倒。
-- **物理机理**：
-  - $\beta\text{-VAE}$ 中的 $\beta$ 系数若设置过大（例如 $\beta > 0.01$），KL 散度惩罚项强迫先验分布与标准正态分布完全对齐：$D_{\text{KL}}(q(\mathbf{z}|H) \,\|\, \mathcal{N}(0, \mathbf{I})) \to 0$。
-  - 编码器发现最安全的降损方式就是将隐变量 $\mathbf{z}$ 直接置为无意义的纯白噪声，隐向量与环境动力学互信息归零：$I(\mathbf{z}; \text{Environment Dynamics}) = 0$。
-
----
-
-### 8.2 CENet 与 β-VAE 关键超参调优矩阵
-
-| 超参数符号 (Python Identifier) | 物理/数学定义 | 官方推荐基准值 | 安全调节区间 | 敏感度 | 调大（Excessive）病理表征 | 调小（Deficient）病理表征 |
-| :--- | :--- | :--- | :--- | :---: | :--- | :--- |
-| `velocity_loss_weight` ($c_{\text{vel}}$) | 速度估计头监督损失权重 | **`3.0 ~ 5.0`** | `[2.0, 8.0]` | **极高** | 编码器偏科严重，时序重构质量受损，动力学泛化下降 | **速度估计头梯度饥饿，Sim2Real 发生严重速度倒挂与后空翻** |
-| `use_adaboot` | 自适应特权速度自举开关 | **`True (必须开启)`** | `[True, False]` | **关键** | - | 早期脏自举死循环，策略陷入局部畸变，训练收敛极慢 |
-| `adaboot_probability` | CENet 估计速度采纳概率 | **`动态退火 (0.0 -> 1.0)`**| `[0.0, 1.0]` | **高** | 过早切到 1.0 会引发步态震荡断崖 | 长期停留在 0.0 则变成特权输入依赖，无法部署盲走 |
-| `adaboot_reward_window` | AdaBoot 奖励滑动评估窗口 | **`2048 episodes`** | `[1024, 4096]` | **中** | 概率退火迟缓，自举周期拉得过长 | 窗口过小导致方差过大，退火过程高频抖动 |
-| `detach_cenet_actor_input` | Actor 输入切断梯度反传 | **`True (必须切断)`** | `[True]` | **绝对** | - | **PPO 策略噪声直接摧毁 CENet 表征，隐空间瞬间爆炸** |
-| `beta_kl` ($\beta$) | KL 散度约束平衡系数 | **`2.5e-4`** | `[1.0e-4, 5.0e-4]` | **极高** | **后验坍缩！隐向量退化为白噪声，丧失任何自愈抗扰力** | 隐空间发散无界，隐向量数值漂移，训练完全不收敛 |
-| `cenet_learning_rate` | CENet 独立优化器学习率 | **`5.0e-4`** | `[3.0e-4, 1.0e-3]` | **高** | 速度预测高频震颤，隐空间表征不平滑 | 速度跟踪迟缓，机器人响应指令滞后 $0.5\text{s}$ 以上 |
-| `context_latent_dim` | 动力学隐变量向量维度 | **`3 维`** | `[3, 8]` | **中** | 维度过大容易导致过拟合与虚假相关性 | 无法容纳足底摩擦力、等效载重与外力扰动三维特征 |
-
----
-
-### 8.3 AdaBoot 自举训练与损失重平衡 SOP
-
-想要彻底根除速度倒挂并保证 CENet 在零视觉下精准测速，必须执行标准的 **AdaBoot 三阶段自举与损失重平衡规范**：
-
-```mermaid
-flowchart TD
-    Phase1["阶段 A：特权真值注入与预热 (0 ~ 500 轮)<br>adaboot_prob = 0.0 -> 100% 真实速度 v* 喂给 Actor<br>CENet 全力进行有监督学习，速度误差 MSE 压至 < 0.03"] --> Phase2["阶段 B：方差自适应退火 (500 ~ 1500 轮)<br>根据 Episode 奖励变异系数 CV 动态插值<br>v_input = (1-p)*v* + p*v_hat，逐步移交控制权"]
-    Phase2 --> Phase3["阶段 C：纯本体感觉独立推断 (1500+ 轮)<br>adaboot_prob = 1.0 -> 100% 依赖 CENet 估计<br>特权传感器彻底离线，完全具备 Sim2Real 盲走部署能力"]
-```
-
-#### 步骤 1：损失权重重平衡与梯度硬隔离（Loss Balancing & Detach）
-- 检查 [`dreamwaq_actor_critic.py`](file:///home/rum/isaac/dreamwaq_lab/scripts/rsl_rl/dreamwaq/dreamwaq_actor_critic.py)：
-  ```python
-  # 必须激活隔离，阻断 PPO 梯度反传污染 CENet
-  self.detach_cenet_actor_input = True
-  ```
-- 检查 [`rsl_rl_dreamwaq_cfg.py`](file:///home/rum/isaac/dreamwaq_lab/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/agents/rsl_rl_dreamwaq_cfg.py)：
-  ```python
-  # 必须将速度回归权重从默认 1.0 提升至 3.0 ~ 5.0
-  velocity_loss_weight = 3.0
-  kl_loss_weight = 2.5e-4
-  reconstruction_loss_weight = 1.0
-  ```
-
-#### 步骤 2：启动 AdaBoot 动态自举（Adaptive Bootstrapping）
-- 在训练配置中开启：
-  ```python
-  use_adaboot = True
-  adaboot_min_probability = 0.0  # 前期 100% 注入特权真值
-  adaboot_max_probability = 1.0  # 后期 100% 使用 CENet
-  adaboot_reward_window = 2048
-  ```
-- 机制原理：AdaBoot 会监控近期 Episode Reward 的变异系数（Coefficient of Variation, $CV = \sigma_R / |\mu_R|$）。
-  - 当策略在早期极度动荡（$CV > 0.5$）时，概率保持在 $0.0$，强制使用真值保驾护航；
-  - 当步态逐渐成熟、方差缩小（$CV < 0.1$）时，概率平滑递增至 $1.0$，完成控制权交接。
-
----
-
-### 8.4 TensorBoard 监控特征与健康指标判定
-
-训练 CENet 期间，重点监视以下指标：
-
-```
-+----------------------------------------------------------------------------------------------------+
-|                                    CENet 专项监控诊断图谱                                           |
-+------------------------------------+----------------------------------+----------------------------+
-| 指标名称 (TensorBoard Tag)         | 正常健康状态 (Healthy Signature) | 异常崩溃状态 (Failure Sign)|
-+------------------------------------+----------------------------------+----------------------------+
-| 1. Loss / vel_estimator            | 快速从 0.25 降至 0.02~0.04 稳定收敛| 停滞在 > 0.15 或陡增反弹发散|
-|    (线速度估计 MSE 损失)           | (脑内估计与物理真值完全贴合)     | (发生严重速度倒挂或常数死锁)|
-+------------------------------------+----------------------------------+----------------------------+
-| 2. Loss / kl_divergence            | 稳定保持在 0.10 ~ 0.45 区间      | 跌至 < 0.001 (后验坍缩)     |
-|    (隐空间分布与高斯先验散度)      | (隐向量既有正则化又有丰富信息量) | 或暴涨至 > 5.0 (隐空间炸裂)|
-+------------------------------------+----------------------------------+----------------------------+
-| 3. adaboot_probability             | 0 -> 1.0 呈平滑 S 型单调爬升     | 长时间卡在 0.0 不动，      |
-|    (速度自举移交概率)              | (策略平稳接管，无阵痛震荡)       | 说明策略奖励散乱无法收敛   |
-+------------------------------------+----------------------------------+----------------------------+
-| 4. Loss / reconstruction_loss      | 平缓单调下降至 0.05 ~ 0.10       | 震荡加剧或居高不下(> 0.8)  |
-|    (45 维本体感觉时序重构)         | (共享 Encoder 学到了时序因果)    | 说明时序感受野出现脏数据   |
-+------------------------------------+----------------------------------+----------------------------+
-```
-
----
-
-### 8.5 即插即用 CENet 与 AdaBoot 训练配置代码
-
-#### 算法端配置：[`rsl_rl_dreamwaq_cfg.py`](file:///home/rum/isaac/dreamwaq_lab/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/agents/rsl_rl_dreamwaq_cfg.py)
-```python
-# ==============================================================================
-# CENet 与 AdaBoot 黄金防倒挂生产配置基线
-# ==============================================================================
-@configclass
-class UnitreeGo2DreamWaQPPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    """防速度倒挂与防隐空间坍缩的标准生产算法配置。"""
-    num_steps_per_env = 24
-    max_iterations = 3000
-    save_interval = 50
-    experiment_name = "unitree_go2_dreamwaq_production"
-
-    policy = RslRlDreamWaqActorCriticCfg(
-        init_noise_std=1.0,
-        actor_hidden_dims=[512, 256, 128],
-        critic_hidden_dims=[512, 256, 128],
-        activation="elu",
-        # CENet 编码器核心结构
-        context_encoder_hidden_dims=[256, 128],
-        context_latent_dim=3,                # 动力学隐变量: 3 维
-        history_length=5,                    # 时序感受野: 5 帧 (0.1s)
-        single_step_dim=45,                  # 单帧本体感觉: 45 维
-        detach_cenet_actor_input=True,       # 绝对切断 PPO 梯度反传！
-    )
-
-    algorithm = RslRlDreamWaqPPOCfg(
-        value_loss_coef=1.0,
-        use_clipped_value_loss=True,
-        clip_param=0.2,
-        entropy_coef=0.01,
-        num_learning_epochs=5,
-        num_mini_batches=4,
-        learning_rate=1.0e-3,
-        schedule="adaptive",
-        gamma=0.99,
-        lam=0.95,
-        desired_kl=0.01,
-        max_grad_norm=1.0,
-        # AdaBoot 动态特权速度自举关键参数
-        use_adaboot=True,
-        adaboot_reward_window=2048,
-        adaboot_min_episodes=32,
-        adaboot_min_probability=0.0,
-        adaboot_max_probability=1.0,
-        # 辅助监督损失重平衡 (彻底终结梯度饥饿)
-        velocity_loss_weight=3.0,            # 提至 3.0，严保速度估计头主权
-        kl_loss_weight=2.5e-4,               # 黄金 KL 系数，杜绝后验坍缩
-        reconstruction_loss_weight=1.0,
-        cenet_learning_rate=5.0e-4,          # CENet 独立解耦优化器学习率
-    )
-```
-
----
-
-## 九、 核心战役深度精调手册：纯平地激光级洗直与左右等变对称洗髓手册
-
-经过长时间复杂地形、连续阶梯或障碍物训练后的策略网络，由于反复经历非对称的地面撞击和姿态代偿，神经突触中会深度固化出**开环偏航漂移（Yaw Drift）**与**单侧肢体内扣/外甩（Duck Waddle）**。
-
-在将策略交付实机部署前，必须进行专门的 **Stage 13 纯平地洗直洗髓手术（Equivariant Symmetry Wash）**。本章详细拆解如何通过等变镜像力场和机械功耗方差均衡，在 200 轮内彻底根除跑偏。
-
----
-
-### 9.1 开环偏航与“单缸推车”非对称性病理剖析
-
-#### 1. 现象表征
-- 在平地上给定严格直行指令：$v_x = 0.6\text{ m/s}$，$v_y = 0.0$，$w_z = 0.0$；
-- 机器人开环行进 10 米后，机身航向角持续向单侧（例如向右）发生 $5^\circ \sim 15^\circ$ 的累积漂移；
-- 仔细观察四足做功发现：**右后腿的机械功耗是左后腿的 2 倍以上**，呈现极其典型的“单侧单缸大功率推车，另一侧挂空挡划水”病态特征；同时伴随左前腿内扣、右前腿外翻。
-
-#### 2. 三大致病动力学根因
-1. **地貌不对称经验的神经记忆残留（Terrain Asymmetry Memory）**：
-   - 在楼梯训练中，机器人左右脚触阶总有先登后登的微小时间差。为了追求存活，网络极易发现并固化“用右腿猛蹬、左腿仅负责保持平衡”的不对称爬楼捷径。这一偏置会沉淀为深层神经突触权重，在平地上依然阴魂不散。
-2. **直行偏航角的“零指令模糊区”（Zero-Yaw Ambiguity）**：
-   - 官方默认的姿态奖励只惩罚机身重力矢量的投影（$g_x, g_y$），仅约束了 Roll 和 Pitch，对全局 Yaw 没有任何约束；而速度追踪项只惩罚当前角速度 $w_z$ 与目标值的平方差。当机器人以极微小的角速度（$0.02\text{ rad/s}$）持续向单侧跑偏时，该惩罚项数值仅为 $0.0004$，对策略而言微不足道，形成事实上的“偏航逃税特区”。
-3. **矢状面镜像等变力场的缺失（Lack of Equivariant Symmetry）**：
-   - 四足机器人在机械结构上关于机身矢状面（Sagittal Plane, X-Z 平面）是严格镜像对称的。但在代数空间中，PPO 策略完全不知晓这一几何物理先验。如果不在损失函数中强行引入左右关节的等变镜像约束，网络就会肆无忌惮地破坏对称性。
-
----
-
-### 9.2 激光洗直与等变对称核心超参矩阵
-
-| 超参数符号 (Python Identifier) | 物理数学定义与公式 | 黄金基准值 | 安全调节区间 | 敏感度 | 调大（Excessive）病理表征 | 调小（Deficient）病理表征 |
-| :--- | :--- | :--- | :--- | :---: | :--- | :--- |
-| `bilateral_hip_symmetry_equivariance_l2` | 左右髋关节全域等变镜像惩罚<br>$(q_{FL} - q_{FL}^0) + (q_{FR} - q_{FR}^0) = 0$ | **`-0.20 ~ -0.50`** | `[-0.10, -0.60]` | **极高** | 锁死髋关节侧向顺应性，轻微侧向碰撞即失稳侧翻 | 允许左右肢体自由畸形内扣外甩，形成顽固鸭子步 |
-| `power_distribution_variance_l2` | 四肢机械功率方差惩罚<br>$\text{Var}(P_{\text{FL}}, P_{\text{FR}}, P_{\text{RL}}, P_{\text{RR}})$ | **`-5.0e-5`** | `[-1.0e-5, -1.0e-4]` | **高** | 抑制肢体在极限地形下的非对称爆发自救能力 | **左右后腿做功比 $> 2.0$，单缸推车持续向单侧严重跑偏** |
-| `straight_ang_vel_z` | 直行偏航角速度刚性门控锁<br>$\mathbb{I}(\|w_z^{\text{cmd}}\| < 0.15) \cdot w_z^2$ | **`-0.25 ~ -0.35`** | `[-0.10, -0.50]` | **中** | 转向灵敏度被抑制，大转弯指令下转向反应迟钝 | 直线行走时伴随周期性蛇形左右摇摆（S-curve） |
-| `flat_heading_error_l2` | 全局航向累计偏差绝对值惩罚<br>$\mathbb{I}(\text{straight}) \cdot (\theta_{\text{yaw}} - \theta_{\text{target}})^2$ | **`-0.35 ~ -0.50`** | `[-0.20, -0.60]` | **高** | 机器人在遇到微小地面颠簸时过度纠偏，引发偏航震荡 | 消除角速度后依然无法纠正微小的开环累积航向角误差 |
-| `joint_diagonal_symmetry_l2` | 对角步态关节镜像协同对称惩罚 | **`-0.05 ~ -0.10`** | `[-0.02, -0.20]` | **中** | 强制四腿必须两两完全相同，压制了腿长差异适应度 | 破坏对角小马步（Trot）严格锁相，沦为落地散乱错位 |
-| `front_hip_neutral_pos_l2` | 前肢髋关节中立基准位双向刚性引力 | **`-0.10 ~ -0.20`** | `[-0.05, -0.30]` | **中** | 前肢变直棍，无法通过小幅髋展调整侧向落足点 | 前腿容易长期内扣代偿，足端轨迹向内侧画弧 |
-
----
-
-### 9.3 Stage 13 纯平地洗直 200 轮快训 SOP
-
-当复合策略已经能越障但平地跑偏时，不要推倒重来，直接挂载 **Stage 13 纯平地洗髓手术** 进行 150 ~ 200 轮精调：
-
-```mermaid
-flowchart TD
-    StepA["步骤 A：地形纯净化与环境隔离<br>切换 terrain_type = plane，卸载所有台阶生成器<br>将重生地形偏航角死死锁在 (0.0, 0.0)"] --> StepB["步骤 B：施加等变对称与功耗方差洗髓力场<br>激活 bilateral_hip_symmetry (-0.50)<br>激活 power_distribution_variance (-1.0e-4)"]
-    StepB --> StepC["步骤 C：低学习率纯净迭代 (150 ~ 200 轮)<br>学习率压低至 1.0e-4，防止洗坏 CENet 与 Actor 核心结构<br>直行指令固定在 0.6~0.8 m/s，严禁转弯扰动"]
-    StepC --> StepD["步骤 D：对称性突触固化与台阶策略大一统 (Stage 14)<br>将洗直后的参数微调至 -0.20 柔性固化<br>返回走廊地形，步态昂首挺直且完美登顶 15cm 台阶"]
-```
-
-#### 关键要点解析：
-1. **必须完全剔除单边截断后门**：
-   - 历史上曾有人使用 `torch.clamp(q_hip, min=0.0)` 只惩罚外展，结果导致腿全部变成**内扣（内八字）**；
-   - 现代等变对称力场必须使用全域对称：
-     $$(q_{\text{FL}} - q_{\text{FL}}^0) + (q_{\text{FR}} - q_{\text{FR}}^0) = 0$$
-     无论哪一侧外展或内扣，只要左右之和不等于零，一律全额双向平方惩罚！
-2. **功耗方差惩罚的画龙点睛之笔**：
-   - 单纯约束关节几何角度，网络依然可能找到“角度看似对称，但右腿输出 $40\text{ N}\cdot\text{m}$、左腿仅输出 $5\text{ N}\cdot\text{m}$”的非对称动力学偷懒点；
-   - 引入四肢总功率方差 `torch.var(power, dim=-1)` 后，从热力学做功第一性原理上，彻底剥夺了单腿偷懒划水的可能！
-
----
-
-### 9.4 即插即用等变对称洗髓奖励与环境配置
-
-#### 1. 核心奖励函数实现：[`rewards.py`](file:///home/rum/isaac/dreamwaq_lab/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/mdp/rewards.py)
-```python
-def bilateral_hip_symmetry_equivariance_l2(
-    env: ManagerBasedRLEnv,
-    command_name: str = "base_velocity",
-    command_threshold: float = 0.08,
-    yaw_threshold: float = 0.15,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=[".*_hip_joint"]),
-) -> torch.Tensor:
-    """双向全域等变镜像对称约束 (无任何单边截断)：
-    左右前腿与左右后腿髋关节偏差必须完全镜像相反：
-    (q_FL - q_nom_FL) + (q_FR - q_nom_FR) == 0
-    (q_RL - q_nom_RL) + (q_RR - q_nom_RR) == 0
-    无论外甩还是内扣，只要破坏矢状面对称性一律全额重罚！
-    """
-    command = env.command_manager.get_command(command_name)
-    # 直行门控：仅在无侧向与转向指令时激活，不影响合法转向动作
-    gate = (
-        (torch.abs(command[:, 1]) < float(command_threshold))
-        & (torch.abs(command[:, 2]) < float(yaw_threshold))
-    ).float()
-
-    asset = env.scene[asset_cfg.name]
-    hip_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
-    default_hip = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
-
-    # 前肢与后肢镜像偏差
-    front_mirror_err = (hip_pos[:, 0] - default_hip[:, 0]) + (hip_pos[:, 1] - default_hip[:, 1])
-    rear_mirror_err = (hip_pos[:, 2] - default_hip[:, 2]) + (hip_pos[:, 3] - default_hip[:, 3])
-
-    return gate * (torch.square(front_mirror_err) + torch.square(rear_mirror_err))
-
-
-def power_distribution_variance_l2(
-    env: ManagerBasedRLEnv,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> torch.Tensor:
-    """四肢做功功率方差惩罚：强制四腿机械功率绝对均衡分配，彻底消灭单缸推车！"""
-    asset = env.scene[asset_cfg.name]
-    qvel = asset.data.joint_vel
-    qfrc = asset.data.applied_torque
-    power = torch.abs(qvel * qfrc)
-    return torch.var(power, dim=-1)
-```
-
-#### 2. 洗髓环境配置注册：[`dreamwaq_env_cfg.py`](file:///home/rum/isaac/dreamwaq_lab/source/dreamwaq_lab/dreamwaq_lab/tasks/manager_based/unitree_go2/dreamwaq/dreamwaq_env_cfg.py)
-```python
-@configclass
-class UnitreeGo2FlatLaserPurifyEnvCfg(UnitreeGo2DreamWaQOptimalStage10EnvCfg):
-    """Stage 13 纯平地 200 轮激光洗髓精调标准环境配置。"""
-
-    def __post_init__(self):
-        super().__post_init__()
-
-        # 1. 彻底切换为 100% 纯平面，排空一切复杂地形残留扰动
-        self.scene.terrain.terrain_type = "plane"
-        self.scene.terrain.terrain_generator = None
-        self.curriculum.terrain_levels = None
-        self.curriculum.command_ranges = None
-
-        # 2. 锁死直行航向坐标系，杜绝重生偏航撕扯
-        self.events.reset_base.params["pose_range"]["yaw"] = (0.0, 0.0)
-        self.commands.base_velocity.heading_command = True
-        self.commands.base_velocity.heading_control_stiffness = 1.0
-        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
-        self.commands.base_velocity.ranges.lin_vel_x = (0.6, 0.8)
-        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
-
-        # 3. 施加强等变镜像对称力场与功耗方差惩罚 (200 轮强效排毒)
-        self.rewards.bilateral_hip_symmetry_equivariance_l2.weight = -0.50
-        self.rewards.power_distribution_variance_l2.weight = -1.0e-4
-        self.rewards.straight_ang_vel_z.weight = -0.35
-        self.rewards.flat_heading_error_l2.weight = -0.50
-        self.rewards.front_hip_neutral_pos_l2.weight = -0.20
-        self.rewards.rear_hip_neutral_pos.weight = -0.20
-
-        # 4. 保持肢体动作平滑与悬浮姿态
-        self.rewards.lin_vel_z_l2.weight = -2.5
-        self.rewards.base_height_relative_l2.weight = -1.5
-        self.rewards.base_height_relative_l2.params["target_height"] = 0.30
-```
-
----
-
-*文档归档路径：`/home/rum/isaac/dreamwaq_lab/dreamWaQ.md`*  
-*维护状态：已固化为工程生产训练标准 SOP*
