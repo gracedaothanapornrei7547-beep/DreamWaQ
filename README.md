@@ -9,7 +9,7 @@
 ![Go2 DreamWaQ 15cm Stairs Summit](assets/dreamwaq_15cm_stairs_climb.gif)
 
 **Unitree Go2 基于 DreamWaQ ($\beta\text{-VAE}$ 动力学自编码世界模型) 纯本体感觉盲走实录**  
-*(平地激光直线助跑 $\to$ 0.3s 前瞻提膝连续翻越 5 阶 15cm 极限高台阶 $\to$ 天台平稳高速冲刺)*
+*(平地高速助跑直行 $v_x = 0.9\,\text{m/s}$ $\to$ 连续攻克翻越 5 阶 15cm 极限高台阶 $\to$ 天台平稳高速冲刺 | MuJoCo Sim2Sim 后方越肩追随实拍)*
 
 | 阶段 1：平地激光级直线助跑 ($x=-0.3 \to 1.2\text{m}$) | 阶段 2：0.3s 前瞻连续攻坚 15cm 台阶 ($z=0.35 \to 1.01\text{m}$) | 阶段 3：高台天台平稳冲刺 ($z=1.10\text{m}$, 侧偏 < 8mm) |
 | :---: | :---: | :---: |
